@@ -1,0 +1,3 @@
+// 资源脚本：嵌入图标和应用清单（requireAdministrator + uiAccess=true + PerMonitorV2）
+1 ICON "icon.ico"
+1 RT_MANIFEST "app.manifest"

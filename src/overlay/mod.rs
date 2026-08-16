@@ -1,0 +1,610 @@
+//! 覆盖层窗口：跟随鼠标的 160px 点击穿透置顶窗口 + 帧循环 + 悬停检测 + 任务栏预览修复。
+//! 移植自 C# MainWindow.cs。
+
+use super::anim::{self, CursorAnim, CursorGeometry};
+use super::hook;
+use super::render::{decode_png, Compositor, CursorTextures};
+use crate::audio::TapPlayer;
+use crate::log;
+use crate::settings::Settings;
+use crate::system_cursor;
+use std::sync::{Arc, Mutex};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::GetDpiForWindow;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetAncestor, GetClassNameW,
+    GetCursorInfo, GetMessageW, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    KillTimer, LoadIconW, PostQuitMessage, RegisterClassW, SetTimer, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TranslateMessage, WindowFromPoint, CS_HREDRAW, CS_VREDRAW,
+    CURSORINFO, GA_ROOT, GW_HWNDNEXT, GWL_STYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CONTEXTMENU, WM_CREATE,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
+};
+
+const CURSOR_PNG: &[u8] = include_bytes!("../../assets/cursor.png");
+const ADDITIVE_PNG: &[u8] = include_bytes!("../../assets/cursor-additive.png");
+
+pub const WM_TRAY: u32 = WM_APP;
+pub const MSG_TOGGLE_CURSOR: u32 = WM_APP + 1;
+pub const MSG_OPEN_SETTINGS: u32 = WM_APP + 2;
+pub const MSG_EXIT: u32 = WM_APP + 3;
+pub const MSG_SETTINGS_CHANGED: u32 = WM_APP + 4;
+pub const MSG_SETTINGS_CLOSED: u32 = WM_APP + 5;
+
+const FRAME_MS: u32 = 8;
+
+struct Overlay {
+    hwnd: HWND,
+    compositor: Compositor,
+    textures: CursorTextures,
+    geom: CursorGeometry,
+    anim: CursorAnim,
+    settings: Arc<Mutex<Settings>>,
+    tap: TapPlayer,
+    hover: TapPlayer,
+
+    cursor_enabled: bool,
+    force_topmost: bool,
+    dpi_scale: f64,
+    down_start: (i32, i32),
+    last_cursor_handle: isize,
+    baseline_normal_handle: isize,
+    was_hovering: bool,
+    was_hover_candidate: bool,
+    was_resize_prompt: bool,
+    last_hover_sound_s: f64,
+    last_frame_time: f64,
+    last_window: (i32, i32, i32, i32),
+    mouse_hook_active: bool,
+    settings_ui_open: bool,
+}
+
+static OVERLAY: Mutex<Option<*mut Overlay>> = Mutex::new(None);
+
+extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_CREATE => {
+                return 0;
+            }
+            WM_TIMER => {
+                if let Some(o) = overlay_ptr() {
+                    (*o).frame();
+                }
+                return 0;
+            }
+            WM_PAINT => {
+                if let Some(o) = overlay_ptr() {
+                    (*o).frame();
+                }
+                return 0;
+            }
+            WM_DPICHANGED => {
+                if let Some(o) = overlay_ptr() {
+                    (*o).dpi_scale = GetDpiForWindow(hwnd) as f64 / 96.0;
+                    (*o).force_topmost = true;
+                }
+                return 0;
+            }
+            WM_TRAY => {
+                if let Some(o) = overlay_ptr() {
+                    o.handle_tray(lparam as u32);
+                }
+                return 0;
+            }
+            MSG_TOGGLE_CURSOR => {
+                if let Some(o) = overlay_ptr() {
+                    o.toggle_enabled(!o.cursor_enabled);
+                }
+                return 0;
+            }
+            MSG_OPEN_SETTINGS => {
+                if let Some(o) = overlay_ptr() {
+                    o.open_settings();
+                }
+                return 0;
+            }
+            MSG_EXIT => {
+                PostQuitMessage(0);
+                return 0;
+            }
+            MSG_SETTINGS_CHANGED => {
+                if let Some(o) = overlay_ptr() {
+                    o.reapply_settings();
+                }
+                return 0;
+            }
+            MSG_SETTINGS_CLOSED => {
+                if let Some(o) = overlay_ptr() {
+                    o.settings_ui_open = false;
+                }
+                return 0;
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                return 0;
+            }
+            _ => {}
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+fn overlay_ptr() -> Option<*mut Overlay> {
+    let g = OVERLAY.lock().unwrap();
+    g.and_then(|p| if p.is_null() { None } else { Some(p) })
+}
+
+/// 主入口：创建覆盖层并运行消息循环，直到收到退出。
+pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
+    unsafe {
+        let hinst = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
+        let class_name: Vec<u16> = "CurosuOverlay\0".encode_utf16().collect();
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinst,
+            hIcon: LoadIconW(hinst, 1 as *const u16),
+            hCursor: 0,
+            hbrBackground: 0,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        RegisterClassW(&wc);
+
+        let geom = {
+            let s = settings.lock().unwrap();
+            anim::geometry_for_width(s.cursor_width)
+        };
+        let win_w = geom.window_size.ceil() as i32;
+        let win_h = geom.window_size.ceil() as i32;
+
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            class_name.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            0,
+            0,
+            win_w,
+            win_h,
+            0,
+            0,
+            hinst,
+            std::ptr::null(),
+        );
+        if hwnd == 0 {
+            log("overlay: CreateWindowExW failed");
+            return;
+        }
+
+        let textures = CursorTextures {
+            cursor: decode_png(CURSOR_PNG).expect("cursor.png"),
+            additive: decode_png(ADDITIVE_PNG).expect("cursor-additive.png"),
+        };
+        let Some(compositor) = Compositor::new(win_w as u32, win_h as u32) else {
+            log("overlay: compositor failed");
+            return;
+        };
+
+        let mut overlay = Box::new(Overlay {
+            hwnd,
+            compositor,
+            textures,
+            geom,
+            anim: CursorAnim::default(),
+            settings,
+            tap,
+            hover,
+            cursor_enabled: true,
+            force_topmost: true,
+            dpi_scale: GetDpiForWindow(hwnd) as f64 / 96.0,
+            down_start: (0, 0),
+            last_cursor_handle: 0,
+            baseline_normal_handle: 0,
+            was_hovering: false,
+            was_hover_candidate: false,
+            was_resize_prompt: false,
+            last_hover_sound_s: f64::NEG_INFINITY,
+            last_frame_time: 0.0,
+            last_window: (i32::MIN, i32::MIN, 0, 0),
+            mouse_hook_active: false,
+            settings_ui_open: false,
+        });
+
+        // 共享指针给 WndProc
+        *OVERLAY.lock().unwrap() = Some(&mut *overlay as *mut Overlay);
+
+        // 托盘图标
+        crate::tray::add(hwnd);
+
+        // 安装系统光标替换 + 鼠标钩子（钩子失败时帧循环自动回退轮询）
+        if system_cursor::install() {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            overlay.mouse_hook_active = hook::install();
+        }
+        SetTimer(hwnd, 1, FRAME_MS, None);
+        overlay.force_topmost = true;
+
+        // 首次启动自动打开设置
+        if !crate::settings::exists() {
+            overlay.open_settings();
+        }
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        // 清理
+        KillTimer(hwnd, 1);
+        hook::uninstall();
+        system_cursor::restore();
+        crate::tray::remove(hwnd);
+        *OVERLAY.lock().unwrap() = None;
+        drop(overlay);
+    }
+}
+
+impl Overlay {
+    fn frame(&mut self) {
+        if !self.cursor_enabled {
+            return;
+        }
+        let now = now_seconds();
+        let mut dt = now - self.last_frame_time;
+        self.last_frame_time = now;
+        if dt <= 0.0 || dt > 0.1 {
+            dt = 1.0 / 60.0;
+        }
+        self.update_mouse_state();
+        let (cx, cy) = hook::cursor_pos();
+        let (dx, dy) = (cx - self.down_start.0, cy - self.down_start.1);
+        self.anim.update(dt, dx as f64, dy as f64);
+        self.render_frame();
+    }
+
+    fn update_mouse_state(&mut self) {
+        if self.mouse_hook_active {
+            if hook::take_press() {
+                self.begin_press();
+            }
+            if hook::take_release() {
+                self.end_press();
+            }
+        } else {
+            // 回退：轮询 GetCursorInfo + GetAsyncKeyState
+            let pressed = (GetAsyncKeyState(0x01) & 0x8000) != 0;
+            if pressed && !self.anim.mouse_down {
+                self.begin_press();
+            } else if !pressed && self.anim.mouse_down {
+                self.end_press();
+            }
+        }
+
+        // Win 键按下强制置顶
+        let win_pressed = (GetAsyncKeyState(0x5B) & 0x8000) != 0
+            || (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+        if win_pressed {
+            self.force_topmost = true;
+        }
+
+        self.update_drag();
+        self.update_hover();
+    }
+
+    fn begin_press(&mut self) {
+        self.anim.begin_press();
+        let (cx, cy) = hook::cursor_pos();
+        self.down_start = (cx, cy);
+        self.force_topmost = true;
+        self.play_tap(1.0);
+    }
+
+    fn end_press(&mut self) {
+        self.anim.end_press();
+        self.play_tap(0.8);
+        self.force_topmost = true;
+    }
+
+    fn update_drag(&mut self) {
+        if self.anim.mouse_down && !self.anim.drag_active {
+            let (cx, cy) = hook::cursor_pos();
+            let dx = cx - self.down_start.0;
+            let dy = cy - self.down_start.1;
+            let threshold = self.geom.cursor_width * self.dpi_scale;
+            if (dx * dx + dy * dy) as f64 > threshold * threshold {
+                self.anim.drag_active = true;
+            }
+        }
+    }
+
+    fn update_hover(&mut self) {
+        let mut info = CURSORINFO {
+            cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetCursorInfo(&mut info) == 0 {
+            return;
+        }
+        let normal_handle = system_cursor::get_blank_handle(system_cursor::OCR_NORMAL);
+        let hand_handle = system_cursor::get_blank_handle(system_cursor::OCR_HAND);
+
+        if info.hCursor != self.last_cursor_handle {
+            self.last_cursor_handle = info.hCursor;
+            self.force_topmost = true;
+        }
+
+        let pointer_hover = info.hCursor != 0 && info.hCursor == hand_handle;
+        self.anim.pointer_hover = pointer_hover;
+
+        let resize_prompt_mode = {
+            let g = self.settings.lock().unwrap();
+            g.hover_sound_as_resize_prompt
+        };
+        if resize_prompt_mode {
+            let resize = self.is_resize_cursor(info.ptScreenPos.x, info.ptScreenPos.y);
+            if resize && !self.was_resize_prompt && !self.anim.mouse_down {
+                self.play_hover();
+            }
+            self.was_resize_prompt = resize;
+        } else {
+            if self.baseline_normal_handle == 0
+                && info.hCursor != 0
+                && info.hCursor != hand_handle
+            {
+                self.baseline_normal_handle = info.hCursor;
+            }
+            let is_hover_candidate = pointer_hover
+                || (info.hCursor != 0
+                    && info.hCursor != normal_handle
+                    && info.hCursor != self.baseline_normal_handle);
+            if is_hover_candidate && !self.was_hover_candidate && !self.anim.mouse_down {
+                self.play_hover();
+            }
+            if !is_hover_candidate {
+                self.baseline_normal_handle =
+                    if info.hCursor == normal_handle { normal_handle } else { info.hCursor };
+            }
+            self.was_hover_candidate = is_hover_candidate;
+            self.was_hovering = pointer_hover;
+        }
+    }
+
+    fn is_resize_cursor(&self, px: i32, py: i32) -> bool {
+        unsafe {
+            let window = WindowFromPoint(windows_sys::Win32::Foundation::POINT { x: px, y: py });
+            if window == 0 {
+                return false;
+            }
+            let root = GetAncestor(window, GA_ROOT);
+            if root == 0 || root == self.hwnd {
+                return false;
+            }
+            let style = GetWindowLongPtrW(root, GWL_STYLE);
+            let ws_maximize: isize = 0x01000000;
+            let ws_thickframe: isize = 0x00040000;
+            if (style & ws_maximize) != 0 || (style & ws_thickframe) == 0 {
+                return false;
+            }
+            let mut rect = windows_sys::Win32::Foundation::RECT::default();
+            if GetWindowRect(root, &mut rect) == 0 {
+                return false;
+            }
+            let border_x = GetSystemMetrics(32).max(1);
+            let border_y = GetSystemMetrics(33).max(1);
+            px <= rect.left + border_x
+                || px >= rect.right - border_x
+                || py <= rect.top + border_y
+                || py >= rect.bottom - border_y
+        }
+    }
+
+    fn play_tap(&self, base_freq: f64) {
+        let settings = self.settings.lock().unwrap();
+        if !settings.tap_sound_enabled || settings.tap_sound_volume <= 0.0 {
+            return;
+        }
+        let freq = base_freq - 0.01 + rand_f() * 0.02;
+        let volume = base_freq * settings.tap_sound_volume;
+        let balance = self.get_balance();
+        self.tap.play(freq, volume, balance);
+    }
+
+    fn play_hover(&self) {
+        let settings = self.settings.lock().unwrap();
+        if !settings.hover_sound_enabled || settings.hover_sound_volume <= 0.0 {
+            return;
+        }
+        let now = now_seconds();
+        if now - self.last_hover_sound_s < 0.02 {
+            return;
+        }
+        self.last_hover_sound_s = now;
+        let freq = 0.99 + rand_f() * 0.02;
+        let balance = self.get_balance();
+        self.hover.play(freq, settings.hover_sound_volume, balance);
+    }
+
+    fn get_balance(&self) -> f64 {
+        // 虚拟屏幕宽度内做声像
+        let (cx, _) = hook::cursor_pos();
+        let vleft = GetSystemMetrics(76);
+        let vwidth = GetSystemMetrics(78).max(1);
+        let x_dip = cx as f64 / self.dpi_scale;
+        (((x_dip - vleft as f64) / vwidth as f64) * 2.0 - 1.0).clamp(-0.6, 0.6)
+    }
+
+    fn render_frame(&mut self) {
+        let ps = self.geom.window_size * self.dpi_scale;
+        let win_w = ps.ceil() as u32;
+        let win_h = ps.ceil() as u32;
+        if self.compositor.w != win_w || self.compositor.h != win_h {
+            if let Some(c) = Compositor::new(win_w, win_h) {
+                self.compositor = c;
+            }
+        }
+        let pgeom = CursorGeometry {
+            cursor_width: self.geom.cursor_width * self.dpi_scale,
+            cursor_height: self.geom.cursor_height * self.dpi_scale,
+            window_size: ps,
+            window_margin: self.geom.window_margin * self.dpi_scale,
+        };
+        self.compositor.draw(&pgeom, &self.anim, &self.textures);
+
+        let (cx, cy) = hook::cursor_pos();
+        let x = cx - (self.geom.window_margin * self.dpi_scale).round() as i32;
+        let y = cy - (self.geom.window_margin * self.dpi_scale).round() as i32;
+        let cur = (x, y, win_w as i32, win_h as i32);
+        if self.force_topmost || cur != self.last_window {
+            unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    win_w as i32,
+                    win_h as i32,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+            self.last_window = cur;
+            self.force_topmost = false;
+        }
+        self.compositor.present(self.hwnd);
+        self.try_bring_above_taskbar_preview();
+    }
+
+    fn try_bring_above_taskbar_preview(&self) {
+        unsafe {
+            let (cx, cy) = hook::cursor_pos();
+            let preview = WindowFromPoint(windows_sys::Win32::Foundation::POINT { x: cx, y: cy });
+            let root = if preview != 0 {
+                GetAncestor(preview, GA_ROOT)
+            } else {
+                0
+            };
+            if is_task_list_thumbnail(root) {
+                SetWindowPos(
+                    self.hwnd,
+                    root,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                return;
+            }
+            let name: Vec<u16> = "TaskListThumbnailWnd\0".encode_utf16().collect();
+            let mut found = FindWindowW(name.as_ptr(), std::ptr::null());
+            while found != 0 {
+                let mut rect = windows_sys::Win32::Foundation::RECT::default();
+                if GetWindowRect(found, &mut rect) != 0
+                    && cx >= rect.left
+                    && cx < rect.right
+                    && cy >= rect.top
+                    && cy < rect.bottom
+                {
+                    SetWindowPos(
+                        self.hwnd,
+                        found,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                    return;
+                }
+                found = GetWindow(found, GW_HWNDNEXT);
+            }
+        }
+    }
+
+    fn toggle_enabled(&mut self, enabled: bool) {
+        if self.cursor_enabled == enabled {
+            return;
+        }
+        self.cursor_enabled = enabled;
+        if enabled {
+            if !system_cursor::install() {
+                self.cursor_enabled = false;
+                return;
+            }
+            self.mouse_hook_active = hook::install();
+            self.force_topmost = true;
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        } else {
+            hook::uninstall();
+            self.mouse_hook_active = false;
+            system_cursor::restore();
+            ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+
+    fn open_settings(&mut self) {
+        if self.settings_ui_open {
+            return;
+        }
+        crate::settings_ui::spawn(self.settings.clone(), self.hwnd);
+        self.settings_ui_open = true;
+    }
+
+    fn reapply_settings(&mut self) {
+        let s = {
+            let g = self.settings.lock().unwrap();
+            g.clone()
+        };
+        self.tap.set_enabled(s.tap_sound_enabled);
+        self.tap.set_volume(s.tap_sound_volume);
+        self.hover.set_enabled(s.hover_sound_enabled);
+        self.hover.set_volume(s.hover_sound_volume);
+        crate::autostart::apply(s.auto_start);
+        // 光标尺寸变更
+        let g = anim::geometry_for_width(s.cursor_width);
+        if (g.cursor_width - self.geom.cursor_width).abs() > 0.001 {
+            self.geom = g;
+            self.force_topmost = true;
+        }
+    }
+
+    fn handle_tray(&mut self, lparam: u32) {
+        if lparam == WM_RBUTTONUP as u32 || lparam == WM_CONTEXTMENU as u32 {
+            crate::tray::show_menu(self.hwnd);
+        } else if lparam == WM_LBUTTONUP as u32 {
+            self.open_settings();
+        }
+    }
+}
+
+fn now_seconds() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn rand_f() -> f64 {
+    // 轻量伪随机 0..1
+    let t = now_seconds() * 1_000_000_000.0;
+    let frac = (t * 2654435761.0).fract();
+    frac.abs()
+}
+
+unsafe fn is_task_list_thumbnail(hwnd: isize) -> bool {
+    if hwnd == 0 {
+        return false;
+    }
+    let mut buf = [0u16; 256];
+    let n = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    let name = String::from_utf16_lossy(&buf[..n as usize]);
+    name == "TaskListThumbnailWnd"
+}
