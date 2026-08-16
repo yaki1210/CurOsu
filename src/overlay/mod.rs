@@ -1,16 +1,19 @@
 //! 覆盖层窗口：跟随鼠标的 160px 点击穿透置顶窗口 + 帧循环 + 悬停检测 + 任务栏预览修复。
 //! 移植自 C# MainWindow.cs。
 
-use super::anim::{self, CursorAnim, CursorGeometry};
-use super::hook;
-use super::render::{decode_png, Compositor, CursorTextures};
+pub mod anim;
+pub mod hook;
+pub mod render;
+
+use anim::{CursorAnim, CursorGeometry};
+use render::{decode_png, Compositor, CursorTextures};
 use crate::audio::TapPlayer;
-use crate::log;
+use crate::log::log;
 use crate::settings::Settings;
 use crate::system_cursor;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::GetDpiForWindow;
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetAncestor, GetClassNameW,
@@ -62,7 +65,7 @@ struct Overlay {
     settings_ui_open: bool,
 }
 
-static OVERLAY: Mutex<Option<*mut Overlay>> = Mutex::new(None);
+static OVERLAY: Mutex<Option<usize>> = Mutex::new(None);
 
 extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
@@ -135,7 +138,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
 
 fn overlay_ptr() -> Option<*mut Overlay> {
     let g = OVERLAY.lock().unwrap();
-    g.and_then(|p| if p.is_null() { None } else { Some(p) })
+    g.filter(|p| *p != 0).map(|p| p as *mut Overlay)
 }
 
 /// 主入口：创建覆盖层并运行消息循环，直到收到退出。
@@ -217,8 +220,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             settings_ui_open: false,
         });
 
-        // 共享指针给 WndProc
-        *OVERLAY.lock().unwrap() = Some(&mut *overlay as *mut Overlay);
+        // 共享指针给 WndProc（存为 usize 以满足 Send）
+        *OVERLAY.lock().unwrap() = Some(&mut *overlay as *mut Overlay as usize);
 
         // 托盘图标
         crate::tray::add(hwnd);

@@ -2,7 +2,7 @@
 //! 移植自 C# NativeMethods + MainWindow 的钩子处理。
 //! 钩子必须安装在带消息循环的线程上。
 
-use crate::log;
+use crate::log::log;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;

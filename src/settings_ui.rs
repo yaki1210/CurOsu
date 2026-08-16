@@ -1,7 +1,7 @@
 //! 设置窗口：独立线程上的 eframe 应用，osu 深色风格。
 //! 直接读写共享 Settings，变更时保存并通知覆盖层线程重新应用。
 
-use crate::log;
+use crate::log::log;
 use crate::overlay::MSG_SETTINGS_CHANGED;
 use crate::settings::Settings;
 use std::sync::{Arc, Mutex};

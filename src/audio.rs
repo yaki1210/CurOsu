@@ -1,20 +1,19 @@
 //! 音效播放：直接调用 waveOut*，12 路设备轮转池，支持变调（改采样率）与声像。
 //! 移植自 C# TapSoundPlayer.cs（NAudio 逻辑）。
 
-use crate::log;
+use crate::log::log;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use windows_sys::Win32::Media::Audio::{
     waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset, waveOutUnprepareHeader,
-    waveOutWrite, WAVE_FORMAT_PCM, WAVEHDR, WAVEFORMATEX, WAVE_MAPPER,
+    waveOutWrite, WAVE_FORMAT_PCM, WAVEHDR, WAVEFORMATEX, WAVE_MAPPER, HWAVEOUT,
 };
-use windows_sys::Win32::Foundation::HWAVE;
 
 const PLAYER_COUNT: usize = 12;
 
 struct Slot {
-    hwo: isize,
+    hwo: HWAVEOUT,
     buffer: Vec<u8>,
     header: WAVEHDR,
 }
@@ -126,9 +125,9 @@ fn audio_worker(wav_bytes: Vec<u8>, rx: Receiver<Request>) {
     };
     let mut slots: Vec<Box<Slot>> = Vec::with_capacity(PLAYER_COUNT);
     for _ in 0..PLAYER_COUNT {
-        let mut hwo: isize = 0;
+        let mut hwo: HWAVEOUT = std::ptr::null_mut();
         let fmt = WAVEFORMATEX {
-            wFormatTag: WAVE_FORMAT_PCM,
+            wFormatTag: WAVE_FORMAT_PCM as u16,
             nChannels: info.channels,
             nSamplesPerSec: info.sample_rate,
             nAvgBytesPerSec: info.sample_rate * info.channels as u32 * (info.bits / 8) as u32,
@@ -165,7 +164,7 @@ fn audio_worker(wav_bytes: Vec<u8>, rx: Receiver<Request>) {
             }
             slot.buffer = wav;
             slot.header = WAVEHDR {
-                lpData: slot.buffer.as_mut_ptr() as *mut u16,
+                lpData: slot.buffer.as_mut_ptr(),
                 dwBufferLength: slot.buffer.len() as u32,
                 dwBytesRecorded: 0,
                 dwUser: 0,
@@ -232,7 +231,7 @@ fn write_sample(out: &mut [u8], off: usize, value: f64) {
 fn build_wav_file(pcm: &[u8], sample_rate: u32, channels: u16, bits: u16) -> Vec<u8> {
     let bytes_per_sample = (bits / 8) as u32;
     let byte_rate = sample_rate * channels as u32 * bytes_per_sample;
-    let block_align = channels * bytes_per_sample;
+    let block_align = (channels as u32 * bytes_per_sample) as u16;
     let mut w = Vec::with_capacity(pcm.len() + 44);
     w.extend_from_slice(b"RIFF");
     w.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());

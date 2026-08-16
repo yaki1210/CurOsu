@@ -1,7 +1,7 @@
 //! 托盘图标 + 弹出菜单。移植自 C# 的 NotifyIcon + ContextMenuStrip。
 
 use crate::overlay::{MSG_EXIT, MSG_OPEN_SETTINGS, MSG_TOGGLE_CURSOR, WM_TRAY};
-use crate::log;
+use crate::log::log;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP,

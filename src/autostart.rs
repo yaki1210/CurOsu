@@ -1,9 +1,8 @@
 //! 开机自启：HKCU Run 键。移植自 C# AutoStartManager.cs。
 
-use crate::log;
+use crate::log::log;
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER, KEY_READ,
-    KEY_SET_VALUE, REG_SZ,
+    RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
 };
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -14,35 +13,11 @@ pub fn apply(enabled: bool) -> bool {
     unsafe {
         let key_wide: Vec<u16> = RUN_KEY.encode_utf16().chain(std::iter::once(0)).collect();
         let value_wide: Vec<u16> = VALUE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut hkey = 0;
-        let rc = RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            key_wide.as_ptr(),
-            0,
-            std::ptr::null(),
-            0,
-            KEY_READ | KEY_SET_VALUE,
-            std::ptr::null(),
-            &mut hkey,
-            std::ptr::null_mut(),
-        );
-        if rc != 0 || hkey == 0 {
-            log("autostart: RegCreateKeyExW failed");
-            // 尝试只读打开
-            let rc2 = RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                key_wide.as_ptr(),
-                0,
-                std::ptr::null(),
-                0,
-                KEY_SET_VALUE,
-                std::ptr::null(),
-                &mut hkey,
-                std::ptr::null_mut(),
-            );
-            if rc2 != 0 {
-                return false;
-            }
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let rc = RegCreateKeyW(HKEY_CURRENT_USER, key_wide.as_ptr(), &mut hkey);
+        if rc != 0 || hkey.is_null() {
+            log("autostart: RegCreateKeyW failed");
+            return false;
         }
         let result = if enabled {
             let path = startup_path();

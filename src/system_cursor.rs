@@ -1,7 +1,7 @@
 //! 系统光标替换：把 14 种标准光标替换为 32x32 空白光标，退出时恢复。
 //! 移植自 C# CursorReplacer.cs。
 
-use crate::log;
+use crate::log::log;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetSystemCursor, LoadCursorW, CopyIcon, DestroyCursor, CreateCursor, SystemParametersInfoW,
     SPI_SETCURSORS, SPIF_SENDCHANGE,
