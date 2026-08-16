@@ -101,13 +101,13 @@ pub fn show_menu(hwnd: HWND) {
             std::ptr::null(),
         );
         match cmd {
-            WM_APP + 1 => {
+            c if c == WM_APP + 1 => {
                 PostMessageW(hwnd, MSG_OPEN_SETTINGS, 0, 0);
             }
-            WM_APP + 2 => {
+            c if c == WM_APP + 2 => {
                 PostMessageW(hwnd, MSG_TOGGLE_CURSOR, 0, 0);
             }
-            WM_APP + 3 => {
+            c if c == WM_APP + 3 => {
                 PostMessageW(hwnd, MSG_EXIT, 0, 0);
             }
             _ => {}
