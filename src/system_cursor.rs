@@ -4,8 +4,8 @@
 use crate::log::log;
 use std::ffi::c_void;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SetSystemCursor, LoadCursorW, CopyIcon, DestroyCursor, CreateCursor, SystemParametersInfoW,
-    SPI_SETCURSORS, SPIF_SENDCHANGE,
+    CopyIcon, CreateCursor, DestroyCursor, LoadCursorW, SetSystemCursor, SystemParametersInfoW,
+    SPIF_SENDCHANGE, SPI_SETCURSORS,
 };
 
 /// 标准光标 ID（与 C# OCR_* 常量一致）。
@@ -95,7 +95,8 @@ pub fn restore() {
         if !INSTALLED {
             return;
         }
-        let restored = SystemParametersInfoW(SPI_SETCURSORS, 0, std::ptr::null_mut(), SPIF_SENDCHANGE);
+        let restored =
+            SystemParametersInfoW(SPI_SETCURSORS, 0, std::ptr::null_mut(), SPIF_SENDCHANGE);
         log(&format!("Restore system cursors ok={restored}"));
         if restored == 0 {
             restore_default_cursors();

@@ -1,4 +1,4 @@
-//! 设置：serde 结构体 + %APPDATA%\OsuCursorRs\settings.json 读写。
+//! 设置：serde 结构体 + %APPDATA%\Curosu\settings.json 读写。
 //! 字段与原 C# 版一一对应。
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,14 @@ impl Default for Settings {
 pub fn settings_path() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
     let mut p = PathBuf::from(base);
+    p.push("Curosu");
+    p.push("settings.json");
+    p
+}
+
+fn legacy_settings_path() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    let mut p = PathBuf::from(base);
     p.push("OsuCursorRs");
     p.push("settings.json");
     p
@@ -43,16 +51,15 @@ pub fn settings_path() -> PathBuf {
 
 /// 设置文件是否存在（首次启动判断）。
 pub fn exists() -> bool {
-    settings_path().exists()
+    settings_path().exists() || legacy_settings_path().exists()
 }
 
 impl Settings {
     pub fn load() -> Self {
-        let path = settings_path();
-        match std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-        {
+        let contents = std::fs::read_to_string(settings_path())
+            .or_else(|_| std::fs::read_to_string(legacy_settings_path()))
+            .ok();
+        match contents.and_then(|s| serde_json::from_str::<Settings>(&s).ok()) {
             Some(mut s) => {
                 s.cursor_width = s.cursor_width.clamp(MIN_CURSOR_WIDTH, MAX_CURSOR_WIDTH);
                 s

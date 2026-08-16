@@ -1,17 +1,16 @@
 //! 托盘图标 + 弹出菜单。移植自 C# 的 NotifyIcon + ContextMenuStrip。
 
-use crate::overlay::{MSG_EXIT, MSG_OPEN_SETTINGS, MSG_TOGGLE_CURSOR, WM_TRAY};
 use crate::log::log;
+use crate::overlay::{MSG_EXIT, MSG_OPEN_SETTINGS, MSG_TOGGLE_CURSOR, WM_TRAY};
 use std::ffi::c_void;
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP,
-};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
-    SetForegroundWindow, TrackPopupMenu,
-    MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    SetForegroundWindow, TrackPopupMenu, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 static mut ICON_LOADED: bool = false;
@@ -27,7 +26,7 @@ fn load_tray_icon() -> *mut c_void {
 pub fn add(hwnd: HWND) -> bool {
     unsafe {
         let icon = load_tray_icon();
-        let tip: Vec<u16> = "osu! Cursor\0".encode_utf16().collect();
+        let tip: Vec<u16> = "Curosu\0".encode_utf16().collect();
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;

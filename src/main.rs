@@ -1,4 +1,4 @@
-//! osu! Cursor for Windows —— Rust 重写（路线 B）。
+//! Curosu for Windows —— Rust 重写（路线 B）。
 //! 入口：单实例、加载设置、创建音频播放器、启动覆盖层。
 
 // 隐藏控制台窗口（纯 GUI 程序）
@@ -16,8 +16,8 @@ mod tray;
 use audio::TapPlayer;
 use settings::Settings;
 use std::sync::{Arc, Mutex};
-use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows_sys::Win32::System::Threading::CreateMutexW;
 
 fn main() {
     // 安装 panic hook：把 panic 信息写入日志，便于排查崩溃

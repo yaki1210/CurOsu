@@ -3,13 +3,13 @@
 //! 移植自 C# 的 WPF 渲染管线（两层 Image 叠加 + RotateTransform/ScaleTransform）。
 
 use super::anim::{CursorAnim, CursorGeometry};
+use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-    HGDIOBJ, HDC,
+    HDC, HGDIOBJ,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, GetWindowRect, ULW_ALPHA};
-use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, UpdateLayeredWindow, ULW_ALPHA};
 
 /// 解码后的 RGBA8 位图。
 pub struct Texture {
@@ -20,9 +20,10 @@ pub struct Texture {
 
 impl Texture {
     /// 采样（双线性）。返回直线（非预乘）RGBA，范围 [0,1]。
-    fn sample(&self, px: f64, py: f64) -> (f64, f64, f64, f64) {
-        let w = self.w as f64;
-        let h = self.h as f64;
+    /// 使用 f32 足够覆盖 8-bit 纹理，同时明显降低软件合成的浮点开销。
+    fn sample(&self, px: f32, py: f32) -> (f32, f32, f32, f32) {
+        let w = self.w as f32;
+        let h = self.h as f32;
         if px < 0.0 || px >= w || py < 0.0 || py >= h {
             return (0.0, 0.0, 0.0, 0.0);
         }
@@ -30,13 +31,13 @@ impl Texture {
         let y0 = (py.floor()).clamp(0.0, h - 1.0) as usize;
         let x1 = (px.ceil()).clamp(0.0, w - 1.0) as usize;
         let y1 = (py.ceil()).clamp(0.0, h - 1.0) as usize;
-        let fx = px - x0 as f64;
-        let fy = py - y0 as f64;
-        let get = |x: usize, y: usize, c: usize| -> f64 {
-            self.data[(y * self.w as usize + x) * 4 + c] as f64 / 255.0
+        let fx = px - x0 as f32;
+        let fy = py - y0 as f32;
+        let get = |x: usize, y: usize, c: usize| -> f32 {
+            self.data[(y * self.w as usize + x) * 4 + c] as f32 / 255.0
         };
-        let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        let mut out = [0.0f64; 4];
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let mut out = [0.0f32; 4];
         for c in 0..4 {
             let top = lerp(get(x0, y0, c), get(x1, y0, c), fx);
             let bot = lerp(get(x0, y1, c), get(x1, y1, c), fx);
@@ -137,27 +138,46 @@ impl Compositor {
 
     /// 合成一帧到缓冲。
     pub fn draw(&mut self, geom: &CursorGeometry, anim: &CursorAnim, tex: &CursorTextures) {
-        let margin = geom.window_margin;
-        let cw = geom.cursor_width;
-        let ch = geom.cursor_height;
-        let s = anim.scale_value;
-        let theta = anim.angle.to_radians();
+        let margin = geom.window_margin as f32;
+        let cw = geom.cursor_width as f32;
+        let ch = geom.cursor_height as f32;
+        let s = anim.scale_value as f32;
+        let theta = (anim.angle as f32).to_radians();
         let (sin, cos) = theta.sin_cos();
-        let add_op = anim.additive_opacity;
-        // 有效源矩形（加一点缓冲避免边缘断层）
-        let x0 = margin - cw * s.max(1.2);
-        let x1 = margin + cw * s.max(1.2);
-        let y0 = margin - ch * s.max(1.2);
-        let y1 = margin + ch * s.max(1.2);
+        let add_op = anim.additive_opacity as f32;
 
-        for by in 0..self.h {
-            for bx in 0..self.w {
-                let pw = bx as f64;
-                let ph = by as f64;
-                if pw < x0 || pw > x1 || ph < y0 || ph > y1 {
-                    self.buffer[(by as usize) * self.w as usize + (bx as usize)] = 0;
-                    continue;
-                }
+        // 先清空整块缓冲，再只遍历旋转后光标的包围盒。原实现每帧扫描
+        // 160x160 的全部像素，即使绝大多数像素必然透明；这里通常能把
+        // 计算量降到原来的约四分之一。
+        self.buffer.fill(0);
+        let draw_scale = s.max(1.2);
+        let corners = [
+            (0.0f32, 0.0f32),
+            (cw * draw_scale, 0.0),
+            (0.0, ch * draw_scale),
+            (cw * draw_scale, ch * draw_scale),
+        ];
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for (x, y) in corners {
+            let rx = x * cos - y * sin + margin;
+            let ry = x * sin + y * cos + margin;
+            min_x = min_x.min(rx);
+            max_x = max_x.max(rx);
+            min_y = min_y.min(ry);
+            max_y = max_y.max(ry);
+        }
+        let x0 = min_x.floor().max(0.0) as u32;
+        let x1 = max_x.ceil().min(self.w as f32 - 1.0) as u32;
+        let y0 = min_y.floor().max(0.0) as u32;
+        let y1 = max_y.ceil().min(self.h as f32 - 1.0) as u32;
+
+        for by in y0..=y1 {
+            for bx in x0..=x1 {
+                let pw = bx as f32;
+                let ph = by as f32;
                 // 逆映射：窗口 -> 图像单位
                 let wx = pw - margin;
                 let wy = ph - margin;
@@ -170,20 +190,23 @@ impl Compositor {
                     continue;
                 }
                 // 图像单位 -> PNG 像素
-                let cpx = ix * tex.cursor.w as f64 / cw;
-                let cpy = iy * tex.cursor.h as f64 / ch;
+                let cpx = ix * tex.cursor.w as f32 / cw;
+                let cpy = iy * tex.cursor.h as f32 / ch;
                 let (cr, cg, cb, ca) = tex.cursor.sample(cpx, cpy);
-                let apx = ix * tex.additive.w as f64 / cw;
-                let apy = iy * tex.additive.h as f64 / ch;
+                let apx = ix * tex.additive.w as f32 / cw;
+                let apy = iy * tex.additive.h as f32 / ch;
                 let (ar, ag, ab, aa) = tex.additive.sample(apx, apy);
 
-                // 光标 over 透明底
+                // 基础层严格保留 cursor.png 的原始白色轮廓。
+                // 粉色只来自 cursor-additive.png，避免把正常光标误染成粉框。
                 let mut or = cr * ca;
                 let mut og = cg * ca;
                 let mut ob = cb * ca;
                 let mut oa = ca;
-                // additive 叠加（带合成透明度）
+                // additive 叠加（原始粉色像素 + 原始透明度）
                 let ma = aa * add_op;
+                // additive 层直接使用原始 cursor-additive.png 的粉色像素，
+                // 不再将它转换成其他色相，避免出现脏紫/偏绿的颜色。
                 or = ar * ma + or * (1.0 - ma);
                 og = ag * ma + og * (1.0 - ma);
                 ob = ab * ma + ob * (1.0 - ma);
@@ -224,7 +247,10 @@ impl Compositor {
             // 先获取窗口当前位置
             let mut rc: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut rc);
-            let pt_dst = windows_sys::Win32::Foundation::POINT { x: rc.left, y: rc.top };
+            let pt_dst = windows_sys::Win32::Foundation::POINT {
+                x: rc.left,
+                y: rc.top,
+            };
             let ok = UpdateLayeredWindow(
                 hwnd,
                 screen_dc,

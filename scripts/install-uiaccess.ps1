@@ -1,6 +1,6 @@
 param(
     [string]$ExePath = (Join-Path $PSScriptRoot "..\target\release\curosu.exe"),
-    [string]$InstallDir = "C:\Program Files\OsuCursorRs"
+    [string]$InstallDir = "C:\Program Files\Curosu"
 )
 
 $ErrorActionPreference = "Stop"

@@ -5,17 +5,16 @@ pub mod anim;
 pub mod hook;
 pub mod render;
 
-use anim::{CursorAnim, CursorGeometry};
-use render::{decode_png, Compositor, CursorTextures};
 use crate::audio::TapPlayer;
 use crate::log::log;
 use crate::settings::Settings;
 use crate::system_cursor;
+use anim::{CursorAnim, CursorGeometry};
+use render::{decode_png, Compositor, CursorTextures};
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{
-    MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST,
-};
+use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::UI::HiDpi::{
     GetDpiForMonitor, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     MDT_EFFECTIVE_DPI,
@@ -23,13 +22,13 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetAncestor, GetClassNameW,
-    GetCursorInfo, GetMessageW, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    KillTimer, LoadIconW, PostQuitMessage, RegisterClassW, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, WindowFromPoint, CS_HREDRAW, CS_VREDRAW,
-    CURSORINFO, GA_ROOT, GW_HWNDNEXT, GWL_STYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CONTEXTMENU, WM_CREATE,
-    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    GetCursorInfo, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, IsWindowVisible, KillTimer, LoadIconW, PostQuitMessage,
+    RegisterClassW, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WindowFromPoint,
+    CS_HREDRAW, CS_VREDRAW, CURSORINFO, GA_ROOT, GWL_STYLE, GW_HWNDNEXT, HWND_TOPMOST, MSG,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP,
+    WM_CONTEXTMENU, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP,
+    WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -68,6 +67,9 @@ struct Overlay {
     last_hover_sound_s: f64,
     last_frame_time: f64,
     last_window: (i32, i32, i32, i32),
+    last_foreground: HWND,
+    last_z_order_refresh_s: f64,
+    frame_ready: bool,
     mouse_hook_active: bool,
     hook_events: u64,
     hook_alive_s: f64,
@@ -161,6 +163,11 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         // 物理像素处理，避免定位与渲染比例不一致导致的右下偏移。
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+        // 提高系统计时器精度到 1ms：SetTimer(8ms) 默认受 15.6ms 计时器周期
+        // 限制（实际 ~64fps），会拖累弹性回弹快扫段的渲染帧数。与原版
+        // WPF 渲染时钟（vsync 60~144Hz）拉齐后转圈动画更流畅。
+        timeBeginPeriod(1);
+
         let hinst = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
         let class_name: Vec<u16> = "CurosuOverlay\0".encode_utf16().collect();
         let wc = WNDCLASSW {
@@ -234,6 +241,9 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             last_hover_sound_s: f64::NEG_INFINITY,
             last_frame_time: 0.0,
             last_window: (i32::MIN, i32::MIN, 0, 0),
+            last_foreground: std::ptr::null_mut(),
+            last_z_order_refresh_s: f64::NEG_INFINITY,
+            frame_ready: false,
             mouse_hook_active: false,
             hook_events: 0,
             hook_alive_s: f64::NEG_INFINITY,
@@ -242,7 +252,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         });
 
         // 共享指针给 WndProc（存为 usize 以满足 Send）
-        *OVERLAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(&mut *overlay as *mut Overlay as usize);
+        *OVERLAY.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(&mut *overlay as *mut Overlay as usize);
 
         // 托盘图标
         crate::tray::add(hwnd);
@@ -271,6 +282,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
 
         // 清理
         KillTimer(hwnd, 1);
+        timeEndPeriod(1);
         hook::uninstall();
         system_cursor::restore();
         crate::tray::remove(hwnd);
@@ -290,6 +302,18 @@ impl Overlay {
         if dt <= 0.0 || dt > 0.1 {
             dt = 1.0 / 60.0;
         }
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if foreground != self.last_foreground {
+                self.last_foreground = foreground;
+                self.force_topmost = true;
+            }
+            // 开始菜单、任务栏预览和部分全屏窗口会重新整理 Z 序。
+            // 定期补一次 TOPMOST，解决光标停住时自绘层被遮住的问题。
+            if now - self.last_z_order_refresh_s >= 0.20 || IsWindowVisible(self.hwnd) == 0 {
+                self.force_topmost = true;
+            }
+        }
         // 位置与钩子存活解耦：钩子被系统静默摘除时位置仍每帧刷新。
         hook::poll_position();
         // 按光标所在显示器实时求 DPI（修复跨显示器/事件丢失时的右下偏移）。
@@ -299,8 +323,9 @@ impl Overlay {
         self.check_hook_health(now);
         let (cx, cy) = hook::cursor_pos();
         let (dx, dy) = (cx - self.down_start.0, cy - self.down_start.1);
+        let previous_anim = self.anim;
         self.anim.update(dt, dx as f64, dy as f64);
-        self.render_frame();
+        self.render_frame(self.anim.visual_changed_from(&previous_anim), now);
     }
 
     /// 按光标所在显示器求有效 DPI，按 HMONITOR 缓存。
@@ -316,7 +341,12 @@ impl Overlay {
                 let mut dx: u32 = 96;
                 let mut dy: u32 = 96;
                 if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) == 0 {
-                    self.dpi_scale = dx as f64 / 96.0;
+                    let next_scale = dx as f64 / 96.0;
+                    if (next_scale - self.dpi_scale).abs() > 0.001 {
+                        self.dpi_scale = next_scale;
+                        self.frame_ready = false;
+                        self.force_topmost = true;
+                    }
                     self.dpi_monitor = mon;
                 }
             }
@@ -365,7 +395,8 @@ impl Overlay {
 
         // Win 键按下强制置顶
         let win_pressed = unsafe {
-            (GetAsyncKeyState(0x5B) as i32 & 0x8000) != 0 || (GetAsyncKeyState(0x5C) as i32 & 0x8000) != 0
+            (GetAsyncKeyState(0x5B) as i32 & 0x8000) != 0
+                || (GetAsyncKeyState(0x5C) as i32 & 0x8000) != 0
         };
         if win_pressed {
             self.force_topmost = true;
@@ -377,7 +408,13 @@ impl Overlay {
 
     fn begin_press(&mut self) {
         self.anim.begin_press();
-        let (cx, cy) = hook::cursor_pos();
+        // 钩子激活时用事件级坐标（对齐 C# BeginPress(data.pt)）；
+        // 回退轮询模式没有按下事件，只能取当前光标位置。
+        let (cx, cy) = if self.mouse_hook_active {
+            hook::press_pos()
+        } else {
+            hook::cursor_pos()
+        };
         self.down_start = (cx, cy);
         self.force_topmost = true;
         self.play_tap(1.0);
@@ -415,6 +452,7 @@ impl Overlay {
             self.force_topmost = true;
         }
 
+        // 与原版一致：只有被替换后的 OCR_HAND 句柄触发悬停样式。
         let pointer_hover = !info.hCursor.is_null() && info.hCursor == hand_handle;
         self.anim.pointer_hover = pointer_hover;
 
@@ -443,8 +481,11 @@ impl Overlay {
                 self.play_hover();
             }
             if !is_hover_candidate {
-                self.baseline_normal_handle =
-                    if info.hCursor == normal_handle { normal_handle } else { info.hCursor };
+                self.baseline_normal_handle = if info.hCursor == normal_handle {
+                    normal_handle
+                } else {
+                    info.hCursor
+                };
             }
             self.was_hover_candidate = is_hover_candidate;
             self.was_hovering = pointer_hover;
@@ -515,13 +556,15 @@ impl Overlay {
         (((x_dip - vleft as f64) / vwidth as f64) * 2.0 - 1.0).clamp(-0.6, 0.6)
     }
 
-    fn render_frame(&mut self) {
+    fn render_frame(&mut self, visual_changed: bool, now: f64) {
         let ps = self.geom.window_size * self.dpi_scale;
         let win_w = ps.ceil() as u32;
         let win_h = ps.ceil() as u32;
+        let mut redraw = visual_changed;
         if self.compositor.w != win_w || self.compositor.h != win_h {
             if let Some(c) = Compositor::new(win_w, win_h) {
                 self.compositor = c;
+                redraw = true;
             }
         }
         let pgeom = CursorGeometry {
@@ -530,8 +573,6 @@ impl Overlay {
             window_size: ps,
             window_margin: self.geom.window_margin * self.dpi_scale,
         };
-        self.compositor.draw(&pgeom, &self.anim, &self.textures);
-
         let (cx, cy) = hook::cursor_pos();
         let x = cx - (self.geom.window_margin * self.dpi_scale).round() as i32;
         let y = cy - (self.geom.window_margin * self.dpi_scale).round() as i32;
@@ -549,9 +590,16 @@ impl Overlay {
                 );
             }
             self.last_window = cur;
+            if self.force_topmost {
+                self.last_z_order_refresh_s = now;
+            }
             self.force_topmost = false;
         }
-        self.compositor.present(self.hwnd);
+        if redraw || !self.frame_ready {
+            self.compositor.draw(&pgeom, &self.anim, &self.textures);
+            self.compositor.present(self.hwnd);
+            self.frame_ready = true;
+        }
         self.try_bring_above_taskbar_preview();
     }
 
@@ -618,6 +666,7 @@ impl Overlay {
             self.hook_alive_s = now_seconds();
             self.health_pos = hook::cursor_pos();
             self.force_topmost = true;
+            self.frame_ready = false;
             unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
         } else {
             hook::uninstall();

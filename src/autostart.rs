@@ -12,7 +12,10 @@ const VALUE_NAME: &str = "Curosu";
 pub fn apply(enabled: bool) -> bool {
     unsafe {
         let key_wide: Vec<u16> = RUN_KEY.encode_utf16().chain(std::iter::once(0)).collect();
-        let value_wide: Vec<u16> = VALUE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_wide: Vec<u16> = VALUE_NAME
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut hkey: HKEY = std::ptr::null_mut();
         let rc = RegCreateKeyW(HKEY_CURRENT_USER, key_wide.as_ptr(), &mut hkey);
         if rc != 0 || hkey.is_null() {
@@ -25,7 +28,10 @@ pub fn apply(enabled: bool) -> bool {
                 RegCloseKey(hkey);
                 return false;
             }
-            let path_wide = path.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+            let path_wide = path
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>();
             RegSetValueExW(
                 hkey,
                 value_wide.as_ptr(),
@@ -43,7 +49,7 @@ pub fn apply(enabled: bool) -> bool {
 }
 
 fn startup_path() -> String {
-    let installed = r"C:\Program Files\OsuCursorRs\curosu.exe";
+    let installed = r"C:\Program Files\Curosu\curosu.exe";
     if std::path::Path::new(installed).exists() {
         return installed.to_string();
     }
