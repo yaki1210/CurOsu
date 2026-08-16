@@ -12,8 +12,10 @@ use crate::log::log;
 use crate::settings::Settings;
 use crate::system_cursor;
 use std::sync::{Arc, Mutex};
-use windows_sys::Win32::Foundation::{HMONITOR, HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST,
+};
 use windows_sys::Win32::UI::HiDpi::{
     GetDpiForMonitor, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     MDT_EFFECTIVE_DPI,
