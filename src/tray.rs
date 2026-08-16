@@ -99,7 +99,7 @@ pub fn show_menu(hwnd: HWND) {
             0,
             hwnd,
             std::ptr::null(),
-        );
+        ) as u32;
         match cmd {
             c if c == WM_APP + 1 => {
                 PostMessageW(hwnd, MSG_OPEN_SETTINGS, 0, 0);
