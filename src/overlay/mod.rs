@@ -231,6 +231,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         if system_cursor::install() {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             overlay.mouse_hook_active = hook::install();
+            hook::init_position();
         }
         SetTimer(hwnd, 1, FRAME_MS, None);
         overlay.force_topmost = true;
@@ -542,6 +543,7 @@ impl Overlay {
                 return;
             }
             self.mouse_hook_active = hook::install();
+            hook::init_position();
             self.force_topmost = true;
             unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
         } else {

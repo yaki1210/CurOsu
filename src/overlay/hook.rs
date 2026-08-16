@@ -9,6 +9,7 @@ use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, MSLLHOOKSTRUCT, WH_MOUSE_LL,
+    GetCursorPos,
     WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN, WM_LBUTTONUP,
     WM_RBUTTONUP, WM_MBUTTONUP, WM_XBUTTONUP,
 };
@@ -66,6 +67,17 @@ pub fn uninstall() {
         if !HOOK.is_null() {
             UnhookWindowsHookEx(HOOK);
             HOOK = std::ptr::null_mut();
+        }
+    }
+}
+
+/// 用当前真实光标位置初始化坐标（避免首个鼠标事件前停留在 0,0）。
+pub fn init_position() {
+    unsafe {
+        let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+        if GetCursorPos(&mut pt) != 0 {
+            CURSOR_X.store(pt.x, Ordering::Relaxed);
+            CURSOR_Y.store(pt.y, Ordering::Relaxed);
         }
     }
 }

@@ -194,7 +194,7 @@ impl Compositor {
                 let g = (og * 255.0).round().clamp(0.0, 255.0) as u32;
                 let b = (ob * 255.0).round().clamp(0.0, 255.0) as u32;
                 self.buffer[(by as usize) * self.w as usize + (bx as usize)] =
-                    (a << 24) | (b << 16) | (g << 8) | r;
+                    (a << 24) | (r << 16) | (g << 8) | b;
             }
         }
     }
@@ -225,7 +225,7 @@ impl Compositor {
             let mut rc: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut rc);
             let pt_dst = windows_sys::Win32::Foundation::POINT { x: rc.left, y: rc.top };
-            UpdateLayeredWindow(
+            let ok = UpdateLayeredWindow(
                 hwnd,
                 screen_dc,
                 &pt_dst,
@@ -236,6 +236,9 @@ impl Compositor {
                 &blend,
                 ULW_ALPHA,
             );
+            if ok == 0 {
+                crate::log::log("render: UpdateLayeredWindow failed");
+            }
             ReleaseDC(std::ptr::null_mut(), screen_dc);
         }
     }

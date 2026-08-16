@@ -41,6 +41,7 @@ pub fn add(hwnd: HWND) -> bool {
         let ok = Shell_NotifyIconW(NIM_ADD, &nid) != 0;
         if ok {
             ICON_LOADED = true;
+            log(&format!("tray: NIM_ADD ok hIcon={icon:?}"));
         } else {
             log("tray: Shell_NotifyIconW NIM_ADD failed");
         }
