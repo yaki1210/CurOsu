@@ -144,8 +144,6 @@ impl Compositor {
         let theta = anim.angle.to_radians();
         let (sin, cos) = theta.sin_cos();
         let add_op = anim.additive_opacity;
-        let win_w = self.w as f64;
-        let win_h = self.h as f64;
         // 有效源矩形（加一点缓冲避免边缘断层）
         let x0 = margin - cw * s.max(1.2);
         let x1 = margin + cw * s.max(1.2);

@@ -9,7 +9,7 @@ use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, MSLLHOOKSTRUCT, WH_MOUSE_LL,
-    WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN, WM_LBUTTONUP,
+    WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN, WM_LBUTTONUP,
     WM_RBUTTONUP, WM_MBUTTONUP, WM_XBUTTONUP,
 };
 

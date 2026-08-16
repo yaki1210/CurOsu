@@ -18,11 +18,11 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetAncestor, GetClassNameW,
     GetCursorInfo, GetMessageW, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    KillTimer, LoadIconW, PostQuitMessage, RegisterClassW, SetTimer, SetWindowLongPtrW,
+    KillTimer, LoadIconW, PostQuitMessage, RegisterClassW, SetTimer,
     SetWindowPos, ShowWindow, TranslateMessage, WindowFromPoint, CS_HREDRAW, CS_VREDRAW,
     CURSORINFO, GA_ROOT, GW_HWNDNEXT, GWL_STYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CONTEXTMENU, WM_CREATE,
-    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
     WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -241,7 +241,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         }
 
         let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -284,7 +284,7 @@ impl Overlay {
             }
         } else {
             // 回退：轮询 GetCursorInfo + GetAsyncKeyState
-            let pressed = (GetAsyncKeyState(0x01) & 0x8000) != 0;
+            let pressed = unsafe { (GetAsyncKeyState(0x01) & 0x8000) != 0 };
             if pressed && !self.anim.mouse_down {
                 self.begin_press();
             } else if !pressed && self.anim.mouse_down {
@@ -293,8 +293,9 @@ impl Overlay {
         }
 
         // Win 键按下强制置顶
-        let win_pressed = (GetAsyncKeyState(0x5B) & 0x8000) != 0
-            || (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+        let win_pressed = unsafe {
+            (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0
+        };
         if win_pressed {
             self.force_topmost = true;
         }
@@ -330,9 +331,9 @@ impl Overlay {
     }
 
     fn update_hover(&mut self) {
-        let mut info: CURSORINFO = std::mem::zeroed();
+        let mut info: CURSORINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
-        if GetCursorInfo(&mut info) == 0 {
+        if unsafe { GetCursorInfo(&mut info) } == 0 {
             return;
         }
         let normal_handle = system_cursor::get_blank_handle(system_cursor::OCR_NORMAL);
@@ -419,7 +420,7 @@ impl Overlay {
         self.tap.play(freq, volume, balance);
     }
 
-    fn play_hover(&self) {
+    fn play_hover(&mut self) {
         let settings = self.settings.lock().unwrap();
         if !settings.hover_sound_enabled || settings.hover_sound_volume <= 0.0 {
             return;
@@ -437,8 +438,8 @@ impl Overlay {
     fn get_balance(&self) -> f64 {
         // 虚拟屏幕宽度内做声像
         let (cx, _) = hook::cursor_pos();
-        let vleft = GetSystemMetrics(76);
-        let vwidth = GetSystemMetrics(78).max(1);
+        let vleft = unsafe { GetSystemMetrics(76) };
+        let vwidth = unsafe { GetSystemMetrics(78) }.max(1);
         let x_dip = cx as f64 / self.dpi_scale;
         (((x_dip - vleft as f64) / vwidth as f64) * 2.0 - 1.0).clamp(-0.6, 0.6)
     }
@@ -542,12 +543,12 @@ impl Overlay {
             }
             self.mouse_hook_active = hook::install();
             self.force_topmost = true;
-            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
         } else {
             hook::uninstall();
             self.mouse_hook_active = false;
             system_cursor::restore();
-            ShowWindow(self.hwnd, SW_HIDE);
+            unsafe { ShowWindow(self.hwnd, SW_HIDE) };
         }
     }
 

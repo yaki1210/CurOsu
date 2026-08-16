@@ -28,16 +28,13 @@ pub fn add(hwnd: HWND) -> bool {
     unsafe {
         let icon = load_tray_icon();
         let tip: Vec<u16> = "osu! Cursor\0".encode_utf16().collect();
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd,
-            uID: 1,
-            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
-            uCallbackMessage: WM_TRAY,
-            hIcon: icon,
-            szTip: [0u16; 128],
-            ..Default::default()
-        };
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAY;
+        nid.hIcon = icon;
         for (i, c) in tip.iter().enumerate() {
             nid.szTip[i] = *c;
         }
@@ -57,12 +54,10 @@ pub fn remove(hwnd: HWND) {
         if !ICON_LOADED {
             return;
         }
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd,
-            uID: 1,
-            ..Default::default()
-        };
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = 1;
         Shell_NotifyIconW(NIM_DELETE, &nid);
         ICON_LOADED = false;
     }
@@ -79,19 +74,19 @@ pub fn show_menu(hwnd: HWND) {
         windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
             menu,
             MF_STRING,
-            WM_APP + 1,
+            (WM_APP + 1) as usize,
             s1.as_ptr(),
         );
         windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
             menu,
             MF_STRING,
-            WM_APP + 2,
+            (WM_APP + 2) as usize,
             s2.as_ptr(),
         );
         windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
             menu,
             MF_STRING,
-            WM_APP + 3,
+            (WM_APP + 3) as usize,
             s3.as_ptr(),
         );
         // 显示菜单（TPM_RETURNCMD：返回值即所选命令 ID）
@@ -106,9 +101,15 @@ pub fn show_menu(hwnd: HWND) {
             std::ptr::null(),
         );
         match cmd {
-            WM_APP + 1 => PostMessageW(hwnd, MSG_OPEN_SETTINGS, 0, 0),
-            WM_APP + 2 => PostMessageW(hwnd, MSG_TOGGLE_CURSOR, 0, 0),
-            WM_APP + 3 => PostMessageW(hwnd, MSG_EXIT, 0, 0),
+            WM_APP + 1 => {
+                PostMessageW(hwnd, MSG_OPEN_SETTINGS, 0, 0);
+            }
+            WM_APP + 2 => {
+                PostMessageW(hwnd, MSG_TOGGLE_CURSOR, 0, 0);
+            }
+            WM_APP + 3 => {
+                PostMessageW(hwnd, MSG_EXIT, 0, 0);
+            }
             _ => {}
         }
         windows_sys::Win32::UI::WindowsAndMessaging::DestroyMenu(menu);

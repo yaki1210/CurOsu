@@ -20,7 +20,7 @@ fn main() {
     // 单实例互斥体
     unsafe {
         let name: Vec<u16> = "Local\\Curosu.SingleInstance\0".encode_utf16().collect();
-        let _h = CreateMutexW(std::ptr::null(), true, name.as_ptr());
+        let _h = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return;
         }

@@ -97,6 +97,7 @@ impl eframe::App for SettingsApp {
 
 /// 在独立线程启动 eframe 设置窗口。
 pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
+    let hwnd_usize = hwnd as usize;
     std::thread::spawn(move || {
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -107,12 +108,13 @@ pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
         };
         let app_creator = move |cc: &eframe::CreationContext<'_>| {
             setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(SettingsApp { settings, hwnd }) as Box<dyn eframe::App>)
+            Ok(Box::new(SettingsApp { settings, hwnd: hwnd_usize as HWND })
+                as Box<dyn eframe::App>)
         };
         let _ = eframe::run_native("curosu-settings", native_options, Box::new(app_creator));
         // 窗口关闭：通知覆盖层重置打开标记
         unsafe {
-            PostMessageW(hwnd, crate::overlay::MSG_SETTINGS_CLOSED, 0, 0);
+            PostMessageW(hwnd_usize as HWND, crate::overlay::MSG_SETTINGS_CLOSED, 0, 0);
         }
     });
 }

@@ -154,8 +154,9 @@ fn audio_worker(wav_bytes: Vec<u8>, rx: Receiver<Request>) {
         let Some(wav) = build_wave(&info, req) else {
             continue;
         };
+        let slot_len = slots.len();
         let slot = &mut slots[next];
-        next = (next + 1) % slots.len();
+        next = (next + 1) % slot_len;
         unsafe {
             // 清理上一个播放
             if !slot.buffer.is_empty() {
@@ -218,7 +219,7 @@ fn read_sample(pcm: &[u8], off: usize, bits: u16) -> i16 {
     if bits == 16 {
         i16::from_le_bytes([pcm[off], pcm[off + 1]])
     } else {
-        ((pcm[off] as i16 - 128) * 256)
+        (pcm[off] as i16 - 128) * 256
     }
 }
 
