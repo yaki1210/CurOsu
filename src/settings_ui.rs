@@ -105,6 +105,16 @@ pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
                     .with_inner_size([420.0, 460.0])
                     .with_title("osu! Cursor 设置")
                     .with_resizable(false),
+                // 主线程已被覆盖层消息循环占用；winit 默认拒绝在
+                // 非主线程创建事件循环（此前设置窗口静默 panic 打不开）。
+                event_loop_builder: Some(Box::new(|builder| {
+                    #[cfg(windows)]
+                    {
+                        use winit::platform::windows::EventLoopBuilderExtWindows;
+                        builder.with_any_thread(true);
+                    }
+                    let _ = builder;
+                })),
                 ..Default::default()
             };
             let app_creator = move |cc: &eframe::CreationContext<'_>| {

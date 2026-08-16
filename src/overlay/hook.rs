@@ -4,7 +4,7 @@
 
 use crate::log::log;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -20,6 +20,8 @@ pub static CURSOR_Y: AtomicI32 = AtomicI32::new(0);
 pub static PRESS_PENDING: AtomicBool = AtomicBool::new(false);
 /// 抬起边沿（消费一次）
 pub static RELEASE_PENDING: AtomicBool = AtomicBool::new(false);
+/// 钩子回调计数（健康监测用：区分"没动鼠标"与"钩子已死"）
+pub static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 static mut HOOK: *mut c_void = std::ptr::null_mut();
 
@@ -29,6 +31,7 @@ unsafe extern "system" fn low_level_mouse_proc(_ncode: i32, wparam: usize, lpara
         let pt = (*data).pt;
         CURSOR_X.store(pt.x, Ordering::Relaxed);
         CURSOR_Y.store(pt.y, Ordering::Relaxed);
+        EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
         match wparam as u32 {
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
                 PRESS_PENDING.store(true, Ordering::Relaxed);
@@ -94,4 +97,20 @@ pub fn take_release() -> bool {
 
 pub fn cursor_pos() -> (i32, i32) {
     (CURSOR_X.load(Ordering::Relaxed), CURSOR_Y.load(Ordering::Relaxed))
+}
+
+/// 当前钩子回调计数。
+pub fn event_count() -> u64 {
+    EVENT_COUNT.load(Ordering::Relaxed)
+}
+
+/// 每帧用 GetCursorPos 刷新位置。位置来源从此不依赖钩子存活
+/// （WH_MOUSE_LL 回调超时会被系统静默摘除，导致覆盖层冻结、
+/// 而系统光标已是空白 → 表现为"光标消失"）。钩子仅负责点击边沿。
+pub fn poll_position() {
+    let mut pt: windows_sys::Win32::Foundation::POINT = unsafe { std::mem::zeroed() };
+    if unsafe { GetCursorPos(&mut pt) } != 0 {
+        CURSOR_X.store(pt.x, Ordering::Relaxed);
+        CURSOR_Y.store(pt.y, Ordering::Relaxed);
+    }
 }

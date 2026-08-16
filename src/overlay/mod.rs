@@ -12,8 +12,12 @@ use crate::log::log;
 use crate::settings::Settings;
 use crate::system_cursor;
 use std::sync::{Arc, Mutex};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+use windows_sys::Win32::Foundation::{HMONITOR, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+use windows_sys::Win32::UI::HiDpi::{
+    GetDpiForMonitor, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    MDT_EFFECTIVE_DPI,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetAncestor, GetClassNameW,
@@ -52,6 +56,7 @@ struct Overlay {
     cursor_enabled: bool,
     force_topmost: bool,
     dpi_scale: f64,
+    dpi_monitor: HMONITOR,
     down_start: (i32, i32),
     last_cursor_handle: *mut core::ffi::c_void,
     baseline_normal_handle: *mut core::ffi::c_void,
@@ -62,6 +67,9 @@ struct Overlay {
     last_frame_time: f64,
     last_window: (i32, i32, i32, i32),
     mouse_hook_active: bool,
+    hook_events: u64,
+    hook_alive_s: f64,
+    health_pos: (i32, i32),
     settings_ui_open: bool,
 }
 
@@ -86,8 +94,9 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 return 0;
             }
             WM_DPICHANGED => {
+                // DPI 每帧按光标所在显示器求值（update_dpi），不依赖此事件
+                // （分层 + NOACTIVATE 窗口该事件触发不可靠）。
                 if let Some(o) = overlay_ptr() {
-                    (*o).dpi_scale = GetDpiForWindow(hwnd) as f64 / 96.0;
                     (*o).force_topmost = true;
                 }
                 return 0;
@@ -145,6 +154,11 @@ fn overlay_ptr() -> Option<*mut Overlay> {
 /// 主入口：创建覆盖层并运行消息循环，直到收到退出。
 pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
     unsafe {
+        // 显式把本线程设为 Per-Monitor-V2：无论 manifest/兼容性覆盖如何，
+        // 本线程所有坐标（GetCursorPos/SetWindowPos/钩子 pt）与 DPI 均按
+        // 物理像素处理，避免定位与渲染比例不一致导致的右下偏移。
+        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
         let hinst = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
         let class_name: Vec<u16> = "CurosuOverlay\0".encode_utf16().collect();
         let wc = WNDCLASSW {
@@ -207,7 +221,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             hover,
             cursor_enabled: true,
             force_topmost: true,
-            dpi_scale: GetDpiForWindow(hwnd) as f64 / 96.0,
+            dpi_scale: 1.0,
+            dpi_monitor: std::ptr::null_mut(),
             down_start: (0, 0),
             last_cursor_handle: std::ptr::null_mut(),
             baseline_normal_handle: std::ptr::null_mut(),
@@ -218,6 +233,9 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             last_frame_time: 0.0,
             last_window: (i32::MIN, i32::MIN, 0, 0),
             mouse_hook_active: false,
+            hook_events: 0,
+            hook_alive_s: f64::NEG_INFINITY,
+            health_pos: (i32::MIN, i32::MIN),
             settings_ui_open: false,
         });
 
@@ -232,6 +250,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             overlay.mouse_hook_active = hook::install();
             hook::init_position();
+            overlay.hook_events = hook::event_count();
+            overlay.hook_alive_s = now_seconds();
         }
         SetTimer(hwnd, 1, FRAME_MS, None);
         overlay.force_topmost = true;
@@ -268,11 +288,59 @@ impl Overlay {
         if dt <= 0.0 || dt > 0.1 {
             dt = 1.0 / 60.0;
         }
+        // 位置与钩子存活解耦：钩子被系统静默摘除时位置仍每帧刷新。
+        hook::poll_position();
+        // 按光标所在显示器实时求 DPI（修复跨显示器/事件丢失时的右下偏移）。
+        self.update_dpi();
         self.update_mouse_state();
+        // 钩子健康监测：超时无回调且光标在动 → 自动重装。
+        self.check_hook_health(now);
         let (cx, cy) = hook::cursor_pos();
         let (dx, dy) = (cx - self.down_start.0, cy - self.down_start.1);
         self.anim.update(dt, dx as f64, dy as f64);
         self.render_frame();
+    }
+
+    /// 按光标所在显示器求有效 DPI，按 HMONITOR 缓存。
+    /// 窗口物理定位与合成器尺寸共用该 scale，跨显示器一帧内自愈。
+    fn update_dpi(&mut self) {
+        let (cx, cy) = hook::cursor_pos();
+        unsafe {
+            let mon = MonitorFromPoint(
+                windows_sys::Win32::Foundation::POINT { x: cx, y: cy },
+                MONITOR_DEFAULTTONEAREST,
+            );
+            if !mon.is_null() && mon != self.dpi_monitor {
+                let mut dx: u32 = 96;
+                let mut dy: u32 = 96;
+                if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) == 0 {
+                    self.dpi_scale = dx as f64 / 96.0;
+                    self.dpi_monitor = mon;
+                }
+            }
+        }
+    }
+
+    /// 钩子被系统静默摘除（LowLevelHooksTimeout 超时）后不自愈会导致
+    /// 点击事件丢失。这里检测"光标在动但超过 20 秒无任何钩子回调"并重装。
+    fn check_hook_health(&mut self, now: f64) {
+        let count = hook::event_count();
+        if count != self.hook_events {
+            self.hook_events = count;
+            self.hook_alive_s = now;
+        }
+        let (cx, cy) = hook::cursor_pos();
+        let moved = (cx, cy) != self.health_pos;
+        self.health_pos = (cx, cy);
+
+        if self.mouse_hook_active && moved && now - self.hook_alive_s > 20.0 {
+            log("mouse hook stale >20s while cursor moved, reinstalling");
+            hook::uninstall();
+            self.mouse_hook_active = hook::install();
+            hook::init_position();
+            self.hook_events = hook::event_count();
+            self.hook_alive_s = now;
+        }
     }
 
     fn update_mouse_state(&mut self) {
@@ -544,6 +612,9 @@ impl Overlay {
             }
             self.mouse_hook_active = hook::install();
             hook::init_position();
+            self.hook_events = hook::event_count();
+            self.hook_alive_s = now_seconds();
+            self.health_pos = hook::cursor_pos();
             self.force_topmost = true;
             unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
         } else {

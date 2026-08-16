@@ -9,9 +9,9 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, LoadIconW, PostMessageW, TrackPopupMenu, WM_APP,
-    MF_STRING, TPM_CENTERALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
-    TPM_VCENTERALIGN, CW_USEDEFAULT,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
+    SetForegroundWindow, TrackPopupMenu,
+    MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 static mut ICON_LOADED: bool = false;
@@ -68,51 +68,48 @@ pub fn remove(hwnd: HWND) {
 pub fn show_menu(hwnd: HWND) {
     unsafe {
         let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
         let s1: Vec<u16> = "设置\0".encode_utf16().collect();
         let s2: Vec<u16> = "关闭光标\0".encode_utf16().collect();
         let s3: Vec<u16> = "退出\0".encode_utf16().collect();
-        // 使用 MF_STRING，命令 ID 用 WM_APP + 序号
-        windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
-            menu,
-            MF_STRING,
-            (WM_APP + 1) as usize,
-            s1.as_ptr(),
-        );
-        windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
-            menu,
-            MF_STRING,
-            (WM_APP + 2) as usize,
-            s2.as_ptr(),
-        );
-        windows_sys::Win32::UI::WindowsAndMessaging::AppendMenuW(
-            menu,
-            MF_STRING,
-            (WM_APP + 3) as usize,
-            s3.as_ptr(),
-        );
-        // 显示菜单（TPM_RETURNCMD：返回值即所选命令 ID）
+        AppendMenuW(menu, MF_STRING, 1001, s1.as_ptr());
+        AppendMenuW(menu, MF_STRING, 1002, s2.as_ptr());
+        AppendMenuW(menu, MF_STRING, 1003, s3.as_ptr());
+
+        // 在当前鼠标位置弹出（此前传 CW_USEDEFAULT 导致菜单出现在左上角）。
+        let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+        if GetCursorPos(&mut pt) == 0 {
+            pt.x = 100;
+            pt.y = 100;
+        }
+        // 托盘菜单标准协议：弹菜单前把窗口提前台，菜单消失后补 WM_NULL，
+        // 保证点击菜单外任意处能正常关闭。
+        SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(
             menu,
-            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_CENTERALIGN
-                | TPM_VCENTERALIGN | TPM_RETURNCMD,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
             0,
             hwnd,
             std::ptr::null(),
         ) as u32;
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+
         match cmd {
-            c if c == WM_APP + 1 => {
+            1001 => {
                 PostMessageW(hwnd, MSG_OPEN_SETTINGS, 0, 0);
             }
-            c if c == WM_APP + 2 => {
+            1002 => {
                 PostMessageW(hwnd, MSG_TOGGLE_CURSOR, 0, 0);
             }
-            c if c == WM_APP + 3 => {
+            1003 => {
                 PostMessageW(hwnd, MSG_EXIT, 0, 0);
             }
             _ => {}
         }
-        windows_sys::Win32::UI::WindowsAndMessaging::DestroyMenu(menu);
+        DestroyMenu(menu);
     }
 }
