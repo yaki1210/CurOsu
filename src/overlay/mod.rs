@@ -284,7 +284,7 @@ impl Overlay {
             }
         } else {
             // 回退：轮询 GetCursorInfo + GetAsyncKeyState
-            let pressed = unsafe { (GetAsyncKeyState(0x01) & 0x8000) != 0 };
+            let pressed = unsafe { (GetAsyncKeyState(0x01) as i32 & 0x8000) != 0 };
             if pressed && !self.anim.mouse_down {
                 self.begin_press();
             } else if !pressed && self.anim.mouse_down {
@@ -294,7 +294,7 @@ impl Overlay {
 
         // Win 键按下强制置顶
         let win_pressed = unsafe {
-            (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0
+            (GetAsyncKeyState(0x5B) as i32 & 0x8000) != 0 || (GetAsyncKeyState(0x5C) as i32 & 0x8000) != 0
         };
         if win_pressed {
             self.force_topmost = true;
