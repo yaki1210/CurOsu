@@ -43,7 +43,7 @@ impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut changed = false;
         let mut s = {
-            let g = self.settings.lock().unwrap();
+            let g = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             g.clone()
         };
         let before = s.clone();
@@ -83,7 +83,7 @@ impl eframe::App for SettingsApp {
             changed = true;
             s.save();
             {
-                let mut g = self.settings.lock().unwrap();
+                let mut g = self.settings.lock().unwrap_or_else(|e| e.into_inner());
                 *g = s;
             }
         }
@@ -99,19 +99,26 @@ impl eframe::App for SettingsApp {
 pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
     let hwnd_usize = hwnd as usize;
     std::thread::spawn(move || {
-        let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([420.0, 460.0])
-                .with_title("osu! Cursor 设置")
-                .with_resizable(false),
-            ..Default::default()
-        };
-        let app_creator = move |cc: &eframe::CreationContext<'_>| {
-            setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(SettingsApp { settings, hwnd: hwnd_usize as HWND })
-                as Box<dyn eframe::App>)
-        };
-        let _ = eframe::run_native("curosu-settings", native_options, Box::new(app_creator));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let native_options = eframe::NativeOptions {
+                viewport: egui::ViewportBuilder::default()
+                    .with_inner_size([420.0, 460.0])
+                    .with_title("osu! Cursor 设置")
+                    .with_resizable(false),
+                ..Default::default()
+            };
+            let app_creator = move |cc: &eframe::CreationContext<'_>| {
+                setup_fonts(&cc.egui_ctx);
+                Ok(Box::new(SettingsApp {
+                    settings,
+                    hwnd: hwnd_usize as HWND,
+                }) as Box<dyn eframe::App>)
+            };
+            let _ = eframe::run_native("curosu-settings", native_options, Box::new(app_creator));
+        }));
+        if let Err(e) = result {
+            log(&format!("settings_ui: eframe thread panicked: {e:?}"));
+        }
         // 窗口关闭：通知覆盖层重置打开标记
         unsafe {
             PostMessageW(hwnd_usize as HWND, crate::overlay::MSG_SETTINGS_CLOSED, 0, 0);

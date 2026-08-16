@@ -1,6 +1,9 @@
 //! osu! Cursor for Windows —— Rust 重写（路线 B）。
 //! 入口：单实例、加载设置、创建音频播放器、启动覆盖层。
 
+// 隐藏控制台窗口（纯 GUI 程序）
+#![windows_subsystem = "windows"]
+
 mod audio;
 mod autostart;
 mod log;
@@ -17,6 +20,11 @@ use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 
 fn main() {
+    // 安装 panic hook：把 panic 信息写入日志，便于排查崩溃
+    std::panic::set_hook(Box::new(|info| {
+        crate::log::log(&format!("PANIC: {info}"));
+    }));
+
     // 单实例互斥体
     unsafe {
         let name: Vec<u16> = "Local\\Curosu.SingleInstance\0".encode_utf16().collect();
@@ -32,7 +40,7 @@ fn main() {
     let tap = TapPlayer::new(include_bytes!("../assets/cursor-tap.wav").to_vec());
     let hover = TapPlayer::new(include_bytes!("../assets/default-hover.wav").to_vec());
     {
-        let s = settings.lock().unwrap();
+        let s = settings.lock().unwrap_or_else(|e| e.into_inner());
         tap.set_enabled(s.tap_sound_enabled);
         tap.set_volume(s.tap_sound_volume);
         hover.set_enabled(s.hover_sound_enabled);

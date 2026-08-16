@@ -138,7 +138,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
 }
 
 fn overlay_ptr() -> Option<*mut Overlay> {
-    let g = OVERLAY.lock().unwrap();
+    let g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
     g.filter(|p| *p != 0).map(|p| p as *mut Overlay)
 }
 
@@ -162,7 +162,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         RegisterClassW(&wc);
 
         let geom = {
-            let s = settings.lock().unwrap();
+            let s = settings.lock().unwrap_or_else(|e| e.into_inner());
             anim::geometry_for_width(s.cursor_width)
         };
         let win_w = geom.window_size.ceil() as i32;
@@ -222,7 +222,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         });
 
         // 共享指针给 WndProc（存为 usize 以满足 Send）
-        *OVERLAY.lock().unwrap() = Some(&mut *overlay as *mut Overlay as usize);
+        *OVERLAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(&mut *overlay as *mut Overlay as usize);
 
         // 托盘图标
         crate::tray::add(hwnd);
@@ -252,7 +252,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         hook::uninstall();
         system_cursor::restore();
         crate::tray::remove(hwnd);
-        *OVERLAY.lock().unwrap() = None;
+        *OVERLAY.lock().unwrap_or_else(|e| e.into_inner()) = None;
         drop(overlay);
     }
 }
@@ -349,7 +349,7 @@ impl Overlay {
         self.anim.pointer_hover = pointer_hover;
 
         let resize_prompt_mode = {
-            let g = self.settings.lock().unwrap();
+            let g = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             g.hover_sound_as_resize_prompt
         };
         if resize_prompt_mode {
@@ -411,7 +411,7 @@ impl Overlay {
     }
 
     fn play_tap(&self, base_freq: f64) {
-        let settings = self.settings.lock().unwrap();
+        let settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         if !settings.tap_sound_enabled || settings.tap_sound_volume <= 0.0 {
             return;
         }
@@ -422,7 +422,7 @@ impl Overlay {
     }
 
     fn play_hover(&mut self) {
-        let settings = self.settings.lock().unwrap();
+        let settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         if !settings.hover_sound_enabled || settings.hover_sound_volume <= 0.0 {
             return;
         }
@@ -564,7 +564,7 @@ impl Overlay {
 
     fn reapply_settings(&mut self) {
         let s = {
-            let g = self.settings.lock().unwrap();
+            let g = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             g.clone()
         };
         self.tap.set_enabled(s.tap_sound_enabled);

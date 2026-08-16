@@ -43,5 +43,5 @@ eframe = "0.28"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = true
