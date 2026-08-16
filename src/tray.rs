@@ -2,6 +2,7 @@
 
 use crate::overlay::{MSG_EXIT, MSG_OPEN_SETTINGS, MSG_TOGGLE_CURSOR, WM_TRAY};
 use crate::log::log;
+use std::ffi::c_void;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP,
@@ -15,7 +16,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 static mut ICON_LOADED: bool = false;
 
-fn load_tray_icon() -> isize {
+fn load_tray_icon() -> *mut c_void {
     unsafe {
         let hinst = GetModuleHandleW(std::ptr::null());
         LoadIconW(hinst, 1 as *const u16)

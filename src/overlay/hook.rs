@@ -3,6 +3,7 @@
 //! 钩子必须安装在带消息循环的线程上。
 
 use crate::log::log;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -19,7 +20,7 @@ pub static PRESS_PENDING: AtomicBool = AtomicBool::new(false);
 /// 抬起边沿（消费一次）
 pub static RELEASE_PENDING: AtomicBool = AtomicBool::new(false);
 
-static mut HOOK: isize = 0;
+static mut HOOK: *mut c_void = std::ptr::null_mut();
 
 unsafe extern "system" fn low_level_mouse_proc(_ncode: i32, wparam: usize, lparam: LPARAM) -> isize {
     if _ncode >= 0 {
@@ -27,7 +28,7 @@ unsafe extern "system" fn low_level_mouse_proc(_ncode: i32, wparam: usize, lpara
         let pt = (*data).pt;
         CURSOR_X.store(pt.x, Ordering::Relaxed);
         CURSOR_Y.store(pt.y, Ordering::Relaxed);
-        match wparam {
+        match wparam as u32 {
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
                 PRESS_PENDING.store(true, Ordering::Relaxed);
             }
@@ -50,7 +51,7 @@ pub fn install() -> bool {
             0,
         );
         HOOK = hook;
-        if hook == 0 {
+        if hook.is_null() {
             log("mouse hook install failed");
             false
         } else {
@@ -62,9 +63,9 @@ pub fn install() -> bool {
 
 pub fn uninstall() {
     unsafe {
-        if HOOK != 0 {
+        if !HOOK.is_null() {
             UnhookWindowsHookEx(HOOK);
-            HOOK = 0;
+            HOOK = std::ptr::null_mut();
         }
     }
 }

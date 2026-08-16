@@ -5,11 +5,10 @@
 use super::anim::{CursorAnim, CursorGeometry};
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGLOBAL, HGDIOBJ, HDC,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    HGDIOBJ, HDC,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    UpdateLayeredWindow, GetWindowRect, ULW_ALPHA, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, GetWindowRect, ULW_ALPHA};
 use windows_sys::Win32::Foundation::{HWND, RECT};
 
 /// 解码后的 RGBA8 位图。
@@ -83,10 +82,10 @@ pub struct Compositor {
 impl Compositor {
     pub fn new(w: u32, h: u32) -> Option<Self> {
         unsafe {
-            let screen_dc = GetDC(0);
+            let screen_dc = GetDC(std::ptr::null_mut());
             let mem_dc = CreateCompatibleDC(screen_dc);
-            ReleaseDC(0, screen_dc);
-            if mem_dc == 0 {
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
+            if mem_dc.is_null() {
                 return None;
             }
             let mut bmi = BITMAPINFO {
@@ -97,9 +96,18 @@ impl Compositor {
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB,
-                    ..Default::default()
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
                 },
-                bmiColors: [Default::default(); 1],
+                bmiColors: [windows_sys::Win32::Graphics::Gdi::RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
             };
             let mut bits_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
             let dib = CreateDIBSection(
@@ -107,10 +115,10 @@ impl Compositor {
                 &mut bmi,
                 DIB_RGB_COLORS,
                 &mut bits_ptr,
-                0 as HGLOBAL,
+                std::ptr::null_mut(),
                 0,
             );
-            if dib == 0 {
+            if dib.is_null() {
                 DeleteDC(mem_dc);
                 return None;
             }
@@ -203,7 +211,7 @@ impl Compositor {
                     (self.w as usize) * (self.h as usize) * 4,
                 );
             }
-            let screen_dc = GetDC(0);
+            let screen_dc = GetDC(std::ptr::null_mut());
             let size = windows_sys::Win32::Foundation::SIZE {
                 cx: self.w as i32,
                 cy: self.h as i32,
@@ -216,7 +224,7 @@ impl Compositor {
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
             // 先获取窗口当前位置
-            let mut rc = RECT::default();
+            let mut rc: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut rc);
             let pt_dst = windows_sys::Win32::Foundation::POINT { x: rc.left, y: rc.top };
             UpdateLayeredWindow(
@@ -230,7 +238,7 @@ impl Compositor {
                 &blend,
                 ULW_ALPHA,
             );
-            ReleaseDC(0, screen_dc);
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
         }
     }
 }

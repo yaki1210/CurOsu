@@ -2,11 +2,11 @@
 //! 移植自 C# CursorReplacer.cs。
 
 use crate::log::log;
+use std::ffi::c_void;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetSystemCursor, LoadCursorW, CopyIcon, DestroyCursor, CreateCursor, SystemParametersInfoW,
     SPI_SETCURSORS, SPIF_SENDCHANGE,
 };
-use std::ffi::c_void;
 
 /// 标准光标 ID（与 C# OCR_* 常量一致）。
 pub const OCR_NORMAL: u32 = 32512;
@@ -41,11 +41,11 @@ const CURSOR_IDS: [u32; 14] = [
     OCR_HELP,
 ];
 
-static mut BLANK_HANDLES: [isize; 14] = [0; 14];
+static mut BLANK_HANDLES: [*mut c_void; 14] = [std::ptr::null_mut(); 14];
 static mut INSTALLED: bool = false;
 
 /// 已替换的空白光标句柄是否包含指定 id。
-pub fn get_blank_handle(cursor_id: u32) -> isize {
+pub fn get_blank_handle(cursor_id: u32) -> *mut c_void {
     unsafe {
         for (i, id) in CURSOR_IDS.iter().enumerate() {
             if *id == cursor_id {
@@ -53,7 +53,7 @@ pub fn get_blank_handle(cursor_id: u32) -> isize {
             }
         }
     }
-    0
+    std::ptr::null_mut()
 }
 
 /// 安装：将所有标准光标替换为空白光标。
@@ -65,17 +65,17 @@ pub fn install() -> bool {
         let mut installed_any = false;
         for (i, id) in CURSOR_IDS.iter().enumerate() {
             let blank = create_blank_cursor();
-            if blank == 0 {
+            if blank.is_null() {
                 log(&format!("CreateCursor failed for id={id}"));
                 continue;
             }
-            if SetSystemCursor(blank as isize, *id) == 0 {
+            if SetSystemCursor(blank, *id) == 0 {
                 log(&format!("SetSystemCursor failed for id={id}"));
-                DestroyCursor(blank as isize);
+                DestroyCursor(blank);
                 continue;
             }
             log(&format!("Hidden system cursor id={id}"));
-            BLANK_HANDLES[i] = blank as isize;
+            BLANK_HANDLES[i] = blank;
             if *id == OCR_NORMAL {
                 installed_any = true;
             }
@@ -83,7 +83,7 @@ pub fn install() -> bool {
         INSTALLED = installed_any;
         log(&format!(
             "system_cursor::install installed={INSTALLED} count={}",
-            BLANK_HANDLES.iter().filter(|h| **h != 0).count()
+            BLANK_HANDLES.iter().filter(|h| !h.is_null()).count()
         ));
         INSTALLED
     }
@@ -101,9 +101,9 @@ pub fn restore() {
             restore_default_cursors();
         }
         for h in BLANK_HANDLES.iter_mut() {
-            if *h != 0 {
+            if !h.is_null() {
                 DestroyCursor(*h);
-                *h = 0;
+                *h = std::ptr::null_mut();
             }
         }
         INSTALLED = false;
@@ -113,12 +113,12 @@ pub fn restore() {
 fn restore_default_cursors() {
     unsafe {
         for id in CURSOR_IDS.iter() {
-            let original = LoadCursorW(0, *id as *const u16);
-            if original == 0 {
+            let original = LoadCursorW(std::ptr::null_mut(), *id as *const u16);
+            if original.is_null() {
                 continue;
             }
             let copy = CopyIcon(original);
-            if copy != 0 {
+            if !copy.is_null() {
                 SetSystemCursor(copy, *id);
             }
         }
@@ -126,19 +126,19 @@ fn restore_default_cursors() {
     }
 }
 
-fn create_blank_cursor() -> isize {
+fn create_blank_cursor() -> *mut c_void {
     // and_mask 全 1（所有像素透明），xor_mask 全 0
     let and_mask = [0xFFu8; 128];
     let xor_mask = [0u8; 128];
     unsafe {
         CreateCursor(
-            0,
+            std::ptr::null_mut(),
             0,
             0,
             32,
             32,
-            and_mask.as_ptr() as *const _,
-            xor_mask.as_ptr() as *const _,
+            and_mask.as_ptr() as *const c_void,
+            xor_mask.as_ptr() as *const c_void,
         )
     }
 }

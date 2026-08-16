@@ -53,8 +53,8 @@ struct Overlay {
     force_topmost: bool,
     dpi_scale: f64,
     down_start: (i32, i32),
-    last_cursor_handle: isize,
-    baseline_normal_handle: isize,
+    last_cursor_handle: *mut core::ffi::c_void,
+    baseline_normal_handle: *mut core::ffi::c_void,
     was_hovering: bool,
     was_hover_candidate: bool,
     was_resize_prompt: bool,
@@ -94,19 +94,20 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             }
             WM_TRAY => {
                 if let Some(o) = overlay_ptr() {
-                    o.handle_tray(lparam as u32);
+                    (*o).handle_tray(lparam as u32);
                 }
                 return 0;
             }
             MSG_TOGGLE_CURSOR => {
                 if let Some(o) = overlay_ptr() {
-                    o.toggle_enabled(!o.cursor_enabled);
+                    let enabled = !(*o).cursor_enabled;
+                    (*o).toggle_enabled(enabled);
                 }
                 return 0;
             }
             MSG_OPEN_SETTINGS => {
                 if let Some(o) = overlay_ptr() {
-                    o.open_settings();
+                    (*o).open_settings();
                 }
                 return 0;
             }
@@ -116,13 +117,13 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             }
             MSG_SETTINGS_CHANGED => {
                 if let Some(o) = overlay_ptr() {
-                    o.reapply_settings();
+                    (*o).reapply_settings();
                 }
                 return 0;
             }
             MSG_SETTINGS_CLOSED => {
                 if let Some(o) = overlay_ptr() {
-                    o.settings_ui_open = false;
+                    (*o).settings_ui_open = false;
                 }
                 return 0;
             }
@@ -153,8 +154,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             cbWndExtra: 0,
             hInstance: hinst,
             hIcon: LoadIconW(hinst, 1 as *const u16),
-            hCursor: 0,
-            hbrBackground: 0,
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name.as_ptr(),
         };
@@ -176,12 +177,12 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             0,
             win_w,
             win_h,
-            0,
-            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
             hinst,
             std::ptr::null(),
         );
-        if hwnd == 0 {
+        if hwnd.is_null() {
             log("overlay: CreateWindowExW failed");
             return;
         }
@@ -208,8 +209,8 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             force_topmost: true,
             dpi_scale: GetDpiForWindow(hwnd) as f64 / 96.0,
             down_start: (0, 0),
-            last_cursor_handle: 0,
-            baseline_normal_handle: 0,
+            last_cursor_handle: std::ptr::null_mut(),
+            baseline_normal_handle: std::ptr::null_mut(),
             was_hovering: false,
             was_hover_candidate: false,
             was_resize_prompt: false,
@@ -329,10 +330,8 @@ impl Overlay {
     }
 
     fn update_hover(&mut self) {
-        let mut info = CURSORINFO {
-            cbSize: std::mem::size_of::<CURSORINFO>() as u32,
-            ..Default::default()
-        };
+        let mut info: CURSORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
         if GetCursorInfo(&mut info) == 0 {
             return;
         }
@@ -344,7 +343,7 @@ impl Overlay {
             self.force_topmost = true;
         }
 
-        let pointer_hover = info.hCursor != 0 && info.hCursor == hand_handle;
+        let pointer_hover = !info.hCursor.is_null() && info.hCursor == hand_handle;
         self.anim.pointer_hover = pointer_hover;
 
         let resize_prompt_mode = {
@@ -358,14 +357,14 @@ impl Overlay {
             }
             self.was_resize_prompt = resize;
         } else {
-            if self.baseline_normal_handle == 0
-                && info.hCursor != 0
+            if self.baseline_normal_handle.is_null()
+                && !info.hCursor.is_null()
                 && info.hCursor != hand_handle
             {
                 self.baseline_normal_handle = info.hCursor;
             }
             let is_hover_candidate = pointer_hover
-                || (info.hCursor != 0
+                || (!info.hCursor.is_null()
                     && info.hCursor != normal_handle
                     && info.hCursor != self.baseline_normal_handle);
             if is_hover_candidate && !self.was_hover_candidate && !self.anim.mouse_down {
@@ -383,11 +382,11 @@ impl Overlay {
     fn is_resize_cursor(&self, px: i32, py: i32) -> bool {
         unsafe {
             let window = WindowFromPoint(windows_sys::Win32::Foundation::POINT { x: px, y: py });
-            if window == 0 {
+            if window.is_null() {
                 return false;
             }
             let root = GetAncestor(window, GA_ROOT);
-            if root == 0 || root == self.hwnd {
+            if root.is_null() || root == self.hwnd {
                 return false;
             }
             let style = GetWindowLongPtrW(root, GWL_STYLE);
@@ -396,7 +395,7 @@ impl Overlay {
             if (style & ws_maximize) != 0 || (style & ws_thickframe) == 0 {
                 return false;
             }
-            let mut rect = windows_sys::Win32::Foundation::RECT::default();
+            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
             if GetWindowRect(root, &mut rect) == 0 {
                 return false;
             }
@@ -488,10 +487,10 @@ impl Overlay {
         unsafe {
             let (cx, cy) = hook::cursor_pos();
             let preview = WindowFromPoint(windows_sys::Win32::Foundation::POINT { x: cx, y: cy });
-            let root = if preview != 0 {
-                GetAncestor(preview, GA_ROOT)
+            let root = if preview.is_null() {
+                std::ptr::null_mut()
             } else {
-                0
+                GetAncestor(preview, GA_ROOT)
             };
             if is_task_list_thumbnail(root) {
                 SetWindowPos(
@@ -507,8 +506,8 @@ impl Overlay {
             }
             let name: Vec<u16> = "TaskListThumbnailWnd\0".encode_utf16().collect();
             let mut found = FindWindowW(name.as_ptr(), std::ptr::null());
-            while found != 0 {
-                let mut rect = windows_sys::Win32::Foundation::RECT::default();
+            while !found.is_null() {
+                let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
                 if GetWindowRect(found, &mut rect) != 0
                     && cx >= rect.left
                     && cx < rect.right
@@ -602,8 +601,8 @@ fn rand_f() -> f64 {
     frac.abs()
 }
 
-unsafe fn is_task_list_thumbnail(hwnd: isize) -> bool {
-    if hwnd == 0 {
+unsafe fn is_task_list_thumbnail(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
         return false;
     }
     let mut buf = [0u16; 256];

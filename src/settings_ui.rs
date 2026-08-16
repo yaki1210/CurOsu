@@ -5,6 +5,7 @@ use crate::log::log;
 use crate::overlay::MSG_SETTINGS_CHANGED;
 use crate::settings::Settings;
 use std::sync::{Arc, Mutex};
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 /// 加载中文字体（Microsoft YaHei）注入 egui。
@@ -35,7 +36,7 @@ fn setup_fonts(ctx: &egui::Context) {
 
 struct SettingsApp {
     settings: Arc<Mutex<Settings>>,
-    hwnd: isize,
+    hwnd: HWND,
 }
 
 impl eframe::App for SettingsApp {
@@ -95,7 +96,7 @@ impl eframe::App for SettingsApp {
 }
 
 /// 在独立线程启动 eframe 设置窗口。
-pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: isize) {
+pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
     std::thread::spawn(move || {
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
