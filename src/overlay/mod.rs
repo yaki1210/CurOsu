@@ -68,6 +68,7 @@ struct Overlay {
     last_window: (i32, i32, i32, i32),
     last_foreground: HWND,
     last_z_order_refresh_s: f64,
+    last_preview_refresh_s: f64,
     frame_ready: bool,
     mouse_hook_active: bool,
     hook_events: u64,
@@ -235,6 +236,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             last_window: (i32::MIN, i32::MIN, 0, 0),
             last_foreground: std::ptr::null_mut(),
             last_z_order_refresh_s: f64::NEG_INFINITY,
+            last_preview_refresh_s: f64::NEG_INFINITY,
             frame_ready: false,
             mouse_hook_active: false,
             hook_events: 0,
@@ -592,10 +594,17 @@ impl Overlay {
             self.compositor.present(self.hwnd);
             self.frame_ready = true;
         }
-        self.try_bring_above_taskbar_preview();
+        self.try_bring_above_taskbar_preview(now);
     }
 
-    fn try_bring_above_taskbar_preview(&self) {
+    fn try_bring_above_taskbar_preview(&mut self, now: f64) {
+        // 节流到 250ms：原版 C# 用 250ms 定时器调用，而这里每帧（8ms）调用时，
+        // 命中缩略图会每帧 SetWindowPos 插入其上方，与 DWM 实时预览互相拉扯，
+        // 造成卡顿且遮挡不稳定。
+        if now - self.last_preview_refresh_s < 0.25 {
+            return;
+        }
+        self.last_preview_refresh_s = now;
         unsafe {
             let (cx, cy) = hook::cursor_pos();
             let preview = WindowFromPoint(windows_sys::Win32::Foundation::POINT { x: cx, y: cy });
