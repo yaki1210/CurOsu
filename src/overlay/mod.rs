@@ -40,7 +40,6 @@ pub const MSG_TOGGLE_CURSOR: u32 = WM_APP + 1;
 pub const MSG_OPEN_SETTINGS: u32 = WM_APP + 2;
 pub const MSG_EXIT: u32 = WM_APP + 3;
 pub const MSG_SETTINGS_CHANGED: u32 = WM_APP + 4;
-pub const MSG_SETTINGS_CLOSED: u32 = WM_APP + 5;
 
 const FRAME_MS: u32 = 8;
 
@@ -74,7 +73,6 @@ struct Overlay {
     hook_events: u64,
     hook_alive_s: f64,
     health_pos: (i32, i32),
-    settings_ui_open: bool,
 }
 
 static OVERLAY: Mutex<Option<usize>> = Mutex::new(None);
@@ -131,12 +129,6 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             MSG_SETTINGS_CHANGED => {
                 if let Some(o) = overlay_ptr() {
                     (*o).reapply_settings();
-                }
-                return 0;
-            }
-            MSG_SETTINGS_CLOSED => {
-                if let Some(o) = overlay_ptr() {
-                    (*o).settings_ui_open = false;
                 }
                 return 0;
             }
@@ -248,7 +240,6 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
             hook_events: 0,
             hook_alive_s: f64::NEG_INFINITY,
             health_pos: (i32::MIN, i32::MIN),
-            settings_ui_open: false,
         });
 
         // 共享指针给 WndProc（存为 usize 以满足 Send）
@@ -283,6 +274,7 @@ pub fn run(settings: Arc<Mutex<Settings>>, tap: TapPlayer, hover: TapPlayer) {
         // 清理
         KillTimer(hwnd, 1);
         timeEndPeriod(1);
+        crate::settings_ui::quit(); // 通知设置线程退出
         hook::uninstall();
         system_cursor::restore();
         crate::tray::remove(hwnd);
@@ -677,11 +669,9 @@ impl Overlay {
     }
 
     fn open_settings(&mut self) {
-        if self.settings_ui_open {
-            return;
-        }
-        crate::settings_ui::spawn(self.settings.clone(), self.hwnd);
-        self.settings_ui_open = true;
+        // 幂等：常驻设置线程只启动一次，之后通过命令通道显示窗口。
+        crate::settings_ui::ensure_started(self.settings.clone(), self.hwnd);
+        crate::settings_ui::show();
     }
 
     fn reapply_settings(&mut self) {

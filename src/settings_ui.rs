@@ -4,10 +4,13 @@
 use crate::log::log;
 use crate::overlay::MSG_SETTINGS_CHANGED;
 use crate::settings::Settings;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW,
+};
 
 const APP_ICON_ICO: &[u8] = include_bytes!("../assets/icon.ico");
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(18, 19, 24);
@@ -184,13 +187,86 @@ fn draw_volume(ui: &mut egui::Ui, label: &str, value: &mut f64) {
     draw_slider(ui, value, 0.0..=1.0);
 }
 
+/// 设置线程的控制命令。
+pub enum UiCmd {
+    /// 显示并聚焦设置窗口（窗口未创建时由 egui 命令兜底）。
+    Show,
+    /// 请求关闭设置线程（程序退出时）。
+    Quit,
+}
+
+/// 设置窗口自身的 HWND（首帧由设置线程记录，overlay 用它控制显示/隐藏）。
+/// 用原生 ShowWindow 控制显示比 egui 的 ViewportCommand::Visible 更可靠，
+/// 避免隐藏后事件循环不再处理命令导致"关了就打不开"。
+static SETTINGS_HWND: AtomicUsize = AtomicUsize::new(0);
+
 struct SettingsApp {
     settings: Arc<Mutex<Settings>>,
     hwnd: HWND,
+    rx: Receiver<UiCmd>,
+    settings_hwnd_found: bool,
+}
+
+impl SettingsApp {
+    /// 记录设置窗口自己的 HWND，供 overlay 原生显示/隐藏。
+    fn find_own_hwnd(&mut self) {
+        if self.settings_hwnd_found {
+            return;
+        }
+        let title: Vec<u16> = "Curosu 设置\0".encode_utf16().collect();
+        unsafe {
+            let w = FindWindowW(std::ptr::null(), title.as_ptr());
+            if !w.is_null() {
+                SETTINGS_HWND.store(w as usize, Ordering::SeqCst);
+                self.settings_hwnd_found = true;
+            }
+        }
+    }
+
+    /// 处理控制命令；把"关闭"拦截为"隐藏"，窗口常驻可再次打开。
+    fn handle_commands(&mut self, ctx: &egui::Context) {
+        self.find_own_hwnd();
+
+        while let Ok(cmd) = self.rx.try_recv() {
+            match cmd {
+                UiCmd::Show => {
+                    let h = SETTINGS_HWND.load(Ordering::SeqCst);
+                    if h != 0 {
+                        unsafe {
+                            ShowWindow(h as HWND, SW_SHOW);
+                            SetForegroundWindow(h as HWND);
+                        }
+                    } else {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+                UiCmd::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        // 用户点关闭按钮：不销毁窗口/不退出事件循环，改为隐藏，可再次打开。
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let h = SETTINGS_HWND.load(Ordering::SeqCst);
+            if h != 0 {
+                unsafe {
+                    ShowWindow(h as HWND, SW_HIDE);
+                }
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+        // 隐藏期间事件循环可能没有重绘事件，周期唤醒以处理后续命令。
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
 }
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_commands(ctx);
+
         let mut s = {
             let g = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             g.clone()
@@ -270,78 +346,93 @@ impl eframe::App for SettingsApp {
     }
 }
 
-/// 设置线程的"打开"触发通道（首次 spawn 时创建并常驻）。
-/// eframe 0.28 的事件循环缓存在线程本地（native/run.rs: with_event_loop），
-/// 设计意图是同一线程反复 run_native 以支持反复开关窗口；若每次打开都新开
-/// 线程，跨线程反复创建 winit 事件循环不可靠（曾导致窗口打不开）。因此改为
-/// 持久线程 + 通道触发，同一线程内复用事件循环，关闭后还能再次打开。
-static OPEN_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
+/// 常驻设置线程的命令发送端与启动标记。
+/// 设置窗口只在启动时创建一次、run_native 常驻运行；打开/关闭通过命令通道
+/// 控制显示/隐藏，窗口从不销毁、事件循环从不退出，彻底避免反复创建/复用
+/// winit 事件循环导致的"关闭后打不开 / 关闭卡死"问题。
+static CMD_TX: Mutex<Option<Sender<UiCmd>>> = Mutex::new(None);
+static STARTED: AtomicBool = AtomicBool::new(false);
 
-/// 幂等地打开设置窗口：首次调用启动常驻线程，之后每次调用唤醒它再开一次。
-pub fn spawn(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
-    let hwnd_usize = hwnd as usize; // HWND 非 Send，跨线程用 usize 传递
-    let mut guard = OPEN_TX.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_none() {
-        let (tx, rx) = channel();
-        *guard = Some(tx);
-        std::thread::spawn(move || settings_thread(rx, settings, hwnd_usize));
+/// 幂等地启动常驻设置线程（窗口初始隐藏，收到 Show 后显示）。
+pub fn ensure_started(settings: Arc<Mutex<Settings>>, hwnd: HWND) {
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
     }
-    if let Some(tx) = guard.as_ref() {
-        let _ = tx.send(());
+    let hwnd_usize = hwnd as usize; // HWND 非 Send，跨线程用 usize 传递
+    let (tx, rx) = channel();
+    *CMD_TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    std::thread::spawn(move || settings_thread(rx, settings, hwnd_usize));
+}
+
+/// 显示设置窗口（幂等）。原生 ShowWindow 优先，可靠且不依赖事件循环唤醒。
+pub fn show() {
+    let h = SETTINGS_HWND.load(Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            ShowWindow(h as HWND, SW_SHOW);
+            SetForegroundWindow(h as HWND);
+        }
+        return;
+    }
+    // 首次：窗口尚未创建（设置线程刚启动），发命令由设置线程显示。
+    if let Some(tx) = CMD_TX.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(UiCmd::Show);
     }
 }
 
-fn settings_thread(rx: Receiver<()>, settings: Arc<Mutex<Settings>>, hwnd_usize: usize) {
-    let hwnd = hwnd_usize as HWND;
-    loop {
-        if rx.recv().is_err() {
-            break; // 通道关闭（进程退出）
-        }
-        // 每次迭代取一个 Arc 副本供闭包 move，避免跨迭代移动 settings。
-        let settings_app = Arc::clone(&settings);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            let native_options = eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([420.0, 650.0])
-                    .with_title("Curosu 设置")
-                    .with_resizable(false)
-                    .with_minimize_button(true)
-                    .with_maximize_button(false),
-                // 主线程已被覆盖层消息循环占用；winit 默认拒绝在
-                // 非主线程创建事件循环（此前设置窗口静默 panic 打不开）。
-                event_loop_builder: Some(Box::new(|builder| {
-                    #[cfg(windows)]
-                    {
-                        use winit::platform::windows::EventLoopBuilderExtWindows;
-                        builder.with_any_thread(true);
-                    }
-                    let _ = builder;
-                })),
-                ..Default::default()
-            };
-            let mut native_options = native_options;
-            if let Some(icon) = load_app_icon() {
-                native_options.viewport = native_options.viewport.with_icon(icon);
-            }
-            let app_creator = move |cc: &eframe::CreationContext<'_>| {
-                setup_fonts(&cc.egui_ctx);
-                setup_style(&cc.egui_ctx);
-                Ok(Box::new(SettingsApp {
-                    settings: settings_app.clone(),
-                    hwnd,
-                }) as Box<dyn eframe::App>)
-            };
-            match eframe::run_native("Curosu", native_options, Box::new(app_creator)) {
-                Err(e) => log(&format!("settings_ui: run_native error: {e:?}")),
-                Ok(()) => {}
-            }
-        }));
-        if let Err(e) = result {
-            log(&format!("settings_ui: eframe thread panicked: {e:?}"));
-        }
-        // 窗口关闭：通知覆盖层重置打开标记
-        unsafe {
-            PostMessageW(hwnd, crate::overlay::MSG_SETTINGS_CLOSED, 0, 0);
-        }
+/// 请求关闭设置线程（overlay 退出时调用）。
+pub fn quit() {
+    if let Some(tx) = CMD_TX.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(UiCmd::Quit);
     }
+}
+
+/// 常驻设置线程：创建窗口后 run_native 阻塞运行事件循环，
+/// 通过命令通道控制显示/隐藏。
+fn settings_thread(rx: Receiver<UiCmd>, settings: Arc<Mutex<Settings>>, hwnd_usize: usize) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let native_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([420.0, 650.0])
+                .with_title("Curosu 设置")
+                .with_resizable(false)
+                .with_minimize_button(true)
+                .with_maximize_button(false)
+                // 初始隐藏，由 open_settings 发送 Show 后再显示。
+                .with_visible(false),
+            // 主线程已被覆盖层消息循环占用；winit 默认拒绝在
+            // 非主线程创建事件循环，需显式 any_thread。
+            event_loop_builder: Some(Box::new(|builder| {
+                #[cfg(windows)]
+                {
+                    use winit::platform::windows::EventLoopBuilderExtWindows;
+                    builder.with_any_thread(true);
+                }
+                let _ = builder;
+            })),
+            ..Default::default()
+        };
+        let mut native_options = native_options;
+        if let Some(icon) = load_app_icon() {
+            native_options.viewport = native_options.viewport.with_icon(icon);
+        }
+        let app_creator = move |cc: &eframe::CreationContext<'_>| {
+            setup_fonts(&cc.egui_ctx);
+            setup_style(&cc.egui_ctx);
+            Ok(Box::new(SettingsApp {
+                settings: settings.clone(),
+                hwnd: hwnd_usize as HWND,
+                rx,
+                settings_hwnd_found: false,
+            }) as Box<dyn eframe::App>)
+        };
+        match eframe::run_native("Curosu", native_options, Box::new(app_creator)) {
+            Err(e) => log(&format!("settings_ui: run_native error: {e:?}")),
+            Ok(()) => {}
+        }
+    }));
+    if let Err(e) = result {
+        log(&format!("settings_ui: eframe thread panicked: {e:?}"));
+    }
+    log("settings_ui: settings thread exited");
 }
