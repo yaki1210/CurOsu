@@ -77,7 +77,12 @@ pub struct CursorAnim {
     pub mouse_down: bool,
     pub drag_active: bool,
     pub pointer_hover: bool,
+    pub spin_returning: bool,
     pub elastic_returning: bool,
+    spin_elapsed: f64,
+    spin_duration: f64,
+    spin_start_angle: f64,
+    spin_end_angle: f64,
     elastic_start_angle: f64,
     elastic_duration: f64,
     elastic_elapsed: f64,
@@ -100,7 +105,12 @@ impl Default for CursorAnim {
             mouse_down: false,
             drag_active: false,
             pointer_hover: false,
+            spin_returning: false,
             elastic_returning: false,
+            spin_elapsed: 0.0,
+            spin_duration: 0.5,
+            spin_start_angle: 0.0,
+            spin_end_angle: 0.0,
             elastic_start_angle: 0.0,
             elastic_duration: ELASTIC_BASE_DURATION,
             elastic_elapsed: 0.0,
@@ -122,6 +132,7 @@ impl CursorAnim {
 
     /// 按下：开始缩放/发光，准备拖动。
     pub fn begin_press(&mut self) {
+        self.spin_returning = false;
         self.elastic_returning = false;
         self.mouse_down = true;
         self.drag_active = false;
@@ -130,24 +141,59 @@ impl CursorAnim {
         self.drag_angle_initialized = false;
     }
 
-    /// 抬起：若曾拖动则触发弹性回弹。
+    /// 抬起：若曾拖动则先旋转 3 圈，再弹性回归初始状态。
     pub fn end_press(&mut self) {
         if !self.mouse_down {
             return;
         }
         if self.drag_active {
-            self.start_elastic_return();
+            self.start_release_animation();
         }
         self.mouse_down = false;
         self.drag_active = false;
     }
 
-    fn start_elastic_return(&mut self) {
+    /// 释放动画入口：先 0.5s 旋转 3 圈（spin），再衔接 elastic 摆动回归。
+    fn start_release_animation(&mut self) {
         if self.angle.abs() < 0.5 {
             return;
         }
-        self.elastic_start_angle = self.angle;
-        self.elastic_duration = ELASTIC_BASE_DURATION * (1.0 + (self.angle / 720.0).abs());
+        self.spin_returning = true;
+        self.spin_elapsed = 0.0;
+        self.spin_duration = 0.5;
+        self.spin_start_angle = self.angle;
+        self.spin_end_angle = self.angle + 3.0 * 360.0;
+        self.angle_velocity = 0.0;
+        log(&format!(
+            "release spin: start={:.1} end={:.1} duration={:.2}s",
+            self.spin_start_angle, self.spin_end_angle, self.spin_duration
+        ));
+    }
+
+    /// 旋转 3 圈阶段：quad ease-out 推进，结束后衔接 elastic 回弹。
+    fn update_spin(&mut self, dt: f64) {
+        self.spin_elapsed += dt;
+        let t = (self.spin_elapsed / self.spin_duration).min(1.0);
+        let progress = 1.0 - (1.0 - t) * (1.0 - t);
+        self.angle = self.spin_start_angle
+            + (self.spin_end_angle - self.spin_start_angle) * progress;
+        // 用 elapsed >= duration 判定（浮点累加可能略小于 1.0 的 t）。
+        if self.spin_elapsed >= self.spin_duration {
+            self.spin_returning = false;
+            // 正转 3 圈（1080°）后朝向 = 归一化角度；用归一化值做小幅弹性回弹，
+            // 避免 elastic 从绝对大角度倒转 3.5 圈。1280° 与 -160° 视觉等价，无跳变。
+            let normalized = normalize_angle(self.spin_end_angle);
+            self.angle = normalized;
+            self.start_elastic_return_from(normalized);
+        }
+    }
+
+    fn start_elastic_return_from(&mut self, start_angle: f64) {
+        if start_angle.abs() < 0.5 {
+            return;
+        }
+        self.elastic_start_angle = start_angle;
+        self.elastic_duration = ELASTIC_BASE_DURATION * (1.0 + (start_angle / 720.0).abs());
         self.elastic_elapsed = 0.0;
         self.elastic_returning = true;
         self.angle_velocity = 0.0;
@@ -213,6 +259,9 @@ impl CursorAnim {
             let delta = target_angle - self.angle;
             let a = self.angle + delta * (dt * DRAG_FOLLOW_RATE).clamp(0.0, 1.0);
             (0.9, 1.0, a)
+        } else if self.spin_returning {
+            self.update_spin(dt);
+            (1.0, 0.0, self.angle)
         } else if self.elastic_returning {
             self.update_elastic_return(dt);
             (1.0, 0.0, self.angle)
@@ -246,14 +295,14 @@ impl CursorAnim {
             } else {
                 0.0
             }
-        } else if self.pointer_hover && !self.elastic_returning {
+        } else if self.pointer_hover && !self.elastic_returning && !self.spin_returning {
             POINTER_ANGLE
-        } else if !self.elastic_returning {
+        } else if !self.elastic_returning && !self.spin_returning {
             0.0
         } else {
             self.angle
         };
-        if !self.elastic_returning {
+        if !self.elastic_returning && !self.spin_returning {
             Self::settle(&mut self.angle, &mut self.angle_velocity, target_angle);
         }
         Self::settle(
@@ -318,11 +367,12 @@ mod tests {
         assert!(anim.angle.abs() > 0.5);
 
         anim.end_press();
-        assert!(anim.elastic_returning);
+        assert!(anim.spin_returning);
         for _ in 0..120 {
             anim.update(1.0 / 60.0, 40.0, 20.0);
         }
         assert!(!anim.mouse_down);
+        assert!(!anim.spin_returning);
         assert!(!anim.elastic_returning);
         assert_eq!(anim.angle, 0.0);
         assert_eq!(anim.scale_value, 1.0);
@@ -354,7 +404,7 @@ mod tests {
         assert!(anim.angle > 180.0, "累计角度未跨过一圈: {}", anim.angle);
 
         anim.end_press();
-        assert!(anim.elastic_returning);
+        assert!(anim.spin_returning);
     }
 
     #[test]
@@ -365,15 +415,55 @@ mod tests {
         anim.angle = 360.0;
         anim.end_press();
 
+        // 360° 正转 3 圈到 1440°，归一化后 = 0°，无需 elastic，动画就地结束。
         let mut elapsed = 0.0;
-        while anim.elastic_returning && elapsed < 1.0 {
+        while (anim.spin_returning || anim.elastic_returning) && elapsed < 3.0 {
             anim.update(1.0 / 60.0, 0.0, 0.0);
             elapsed += 1.0 / 60.0;
         }
 
+        assert!(!anim.spin_returning);
         assert!(!anim.elastic_returning);
-        assert!(elapsed < 0.7, "大角度释放仍然过慢: {elapsed:.3}s");
+        // 0.5s spin + 从 ~1440° 衰减的 elastic，总时长应远小于 2.5s。
+        assert!(elapsed < 2.5, "大角度释放仍然过慢: {elapsed:.3}s");
         assert_eq!(anim.angle, 0.0);
+    }
+
+    #[test]
+    fn release_spins_three_turns_then_settles() {
+        let mut anim = CursorAnim::default();
+        anim.begin_press();
+        anim.drag_active = true;
+        anim.angle = 200.0;
+        anim.end_press();
+        assert!(anim.spin_returning);
+        assert!(!anim.elastic_returning);
+
+        // spin 阶段：推进到 spin 结束（约 0.5s）。结束帧角度归一化为 -160°
+        // （200° 正转 3 圈到 1280°，normalize 后 = -160°，视觉连续无跳变）。
+        let mut frames = 0;
+        while anim.spin_returning && frames < 120 {
+            anim.update(1.0 / 60.0, 0.0, 0.0);
+            frames += 1;
+        }
+        assert!(!anim.spin_returning, "spin 未在 ~0.5s 结束");
+        assert!(anim.elastic_returning, "spin 结束未衔接 elastic");
+        assert!(
+            (anim.angle - (-160.0)).abs() < 0.5,
+            "spin 结束角度={}（期望 -160）",
+            anim.angle
+        );
+
+        // elastic 阶段：跑满直到回归初始状态。
+        let mut elapsed = 0.0;
+        while anim.elastic_returning && elapsed < 3.0 {
+            anim.update(1.0 / 60.0, 0.0, 0.0);
+            elapsed += 1.0 / 60.0;
+        }
+        assert!(!anim.elastic_returning);
+        assert_eq!(anim.angle, 0.0);
+        assert_eq!(anim.scale_value, 1.0);
+        assert_eq!(anim.additive_opacity, 0.0);
     }
 
     /// 原版 elastic_out 必须从 0 开始（否则释放瞬间角度跳变），
