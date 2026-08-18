@@ -1,46 +1,63 @@
-# Curosu — osu! 风格光标覆盖层（Windows）
+# Curosu
 
-Curosu 是用 Rust 编写的 Windows 光标覆盖层：用自绘的 osu! 风格光标替换系统光标——按下缩放发光、拖动跟随旋转、释放先快速转 3 圈再弹性回正，并带有敲击 / 悬停音效和设置窗口。
+Windows 上的 osu! lazer 风格光标覆盖层。
+
+Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 Rust 重写，复刻 osu! lazer 的光标动画、缩放、发光与旋转效果。程序无需安装，release 版 `curosu.exe` 仅约 **3.5 MB**。
+
+> 非 osu! 官方项目，与 osu! 或 ppy 无关。
+
+## 演示
+
+<video src="https://github.com/yaki1210/CurOsu/raw/refs/heads/main/demo/demo.mp4" controls width="720"></video>
+
+[下载 / 查看演示视频](demo/demo.mp4)
 
 ## 特性
 
-- 🖱️ 自绘光标覆盖层，隐藏并替换系统光标（鼠标钩子捕获事件，失效时自动回退轮询）
-- 🔄 按下缩放 + 发光；拖动时角度连续累积、跟随旋转；释放先 0.5s 正转 3 圈，再 elastic 摆动回归初始方向
-- 🔇 敲击音效 / 悬停音效（可开关、可调音量、可做窗口拉伸提示）
-- ⚙️ 设置窗口：光标大小、音效、开机自启（eframe/egui，常驻线程、可反复开关）
-- 📌 置顶、点击穿透、跨显示器 DPI 自适应、任务栏预览置顶修复
-- 🪟 托盘图标：左键打开设置、右键菜单（设置 / 关闭光标 / 退出）
+- 自绘 osu! 风格光标覆盖层，隐藏 Windows 系统光标
+- 按下时缩放并发光，拖动时跟随鼠标旋转
+- 释放时先快速旋转 3 圈，再以弹性动画回正
+- 支持敲击音效、悬停音效、音量调节和窗口拉伸提示
+- 设置窗口支持调整光标大小与开机自启
+- 托盘图标、点击穿透、置顶和多显示器 DPI 自适应
+- 鼠标钩子失效时自动回退到位置轮询
 
-## 构建
+## 下载与运行
 
-需要 Windows 上的 Rust 稳定版工具链。
+从 [Releases](https://github.com/yaki1210/CurOsu/releases/latest) 下载 `curosu.exe`，双击即可运行，无需安装。
 
-```bash
+程序首次启动会打开设置窗口；关闭设置窗口只会将程序隐藏到托盘，不会退出。托盘图标操作如下：
+
+| 操作 | 行为 |
+| --- | --- |
+| 左键单击 | 打开或聚焦设置窗口 |
+| 右键单击 | 打开设置、关闭光标或退出程序 |
+
+Curosu 仅支持 Windows。部分独占全屏程序可能不会显示覆盖层，建议使用无边框或窗口化模式。
+
+## 从源码构建
+
+需要 Windows 和 Rust stable 工具链：
+
+```powershell
 cargo build --release
 ```
 
-产物：`target/release/curosu.exe`
+构建产物位于：
 
-已配置 GitHub Actions（`.github/workflows/build.yml`）：push 到 `main` 自动构建并上传 artifact；打 `v*` tag 自动发布 GitHub Release。
+```text
+target/release/curosu.exe
+```
 
-## 使用
-
-直接运行 `curosu.exe`。程序会隐藏系统光标并显示自绘光标，首次运行自动打开设置窗口。
-
-托盘操作：
-
-| 操作 | 行为 |
-|---|---|
-| 左键单击 | 打开 / 聚焦设置窗口 |
-| 右键 | 菜单：设置、关闭光标、退出 |
+GitHub Actions 会在推送到 `main` 时构建 artifact，并在推送 `v*` tag 时自动创建 Release。
 
 ## 配置
 
-设置保存在 `%APPDATA%\Curosu\settings.json`：
+配置文件位于 `%APPDATA%\Curosu\settings.json`：
 
-| 字段 | 含义 | 默认 |
-|---|---|---|
-| `cursor_width` | 光标宽度（px，16–64） | `30` |
+| 字段 | 含义 | 默认值 |
+| --- | --- | --- |
+| `cursor_width` | 光标宽度（16–64 px） | `30` |
 | `tap_sound_enabled` | 敲击音效 | `true` |
 | `tap_sound_volume` | 敲击音量（0–1） | `1.0` |
 | `hover_sound_enabled` | 悬停音效 | `true` |
@@ -50,12 +67,12 @@ cargo build --release
 
 ## 技术实现
 
-- 软件合成器：两层 PNG（普通 + additive 高光）经双线性仿射旋转 / 缩放合成到预乘 ARGB 缓冲，通过 `UpdateLayeredWindow` 呈现
-- `WH_MOUSE_LL` 低层鼠标钩子捕获按下 / 抬起边沿与光标位置；钩子被系统摘除时自动重装、位置每帧用 `GetCursorPos` 兜底
-- 释放动画两阶段：先 0.5s 正转 3 圈（quad ease-out），随后角度归一化并做 elastic 摆动回归初始方向
-- 设置窗口：eframe/egui，常驻线程 + 原生 `ShowWindow` 显示 / 隐藏，可反复开关不卡死
-- 工具脚本见 `scripts/`（安装 uiAccess、恢复系统光标、停止运行实例）
+- Rust + Win32 API 实现透明分层窗口与全局光标覆盖
+- 通过 `WH_MOUSE_LL` 捕获鼠标按下、移动和释放事件
+- 使用 PNG 纹理进行双线性缩放、旋转和高光合成
+- 使用 `eframe/egui` 实现设置窗口
+- 使用 `UpdateLayeredWindow` 呈现预乘 ARGB 帧
 
 ## 许可
 
-[MIT License](LICENSE)（Copyright © 2026 yaki1210）
+[MIT License](LICENSE)
