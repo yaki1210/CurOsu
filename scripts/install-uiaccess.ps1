@@ -1,5 +1,7 @@
 param(
-    [string]$ExePath = (Join-Path $PSScriptRoot "..\target\release\curosu.exe"),
+    # 优先使用脚本旁边的 curosu.exe（Release 解压包布局），
+    # 否则回退到本地构建产物（开发布局：scripts/ -> ../target/release/）。
+    [string]$ExePath = $(if (Test-Path (Join-Path $PSScriptRoot "curosu.exe")) { Join-Path $PSScriptRoot "curosu.exe" } else { Join-Path $PSScriptRoot "..\target\release\curosu.exe" }),
     [string]$InstallDir = "C:\Program Files\Curosu"
 )
 

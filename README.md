@@ -2,7 +2,7 @@
 
 Windows 上的 osu! lazer 风格光标覆盖层。
 
-Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 Rust 重写，复刻 osu! lazer 的光标动画、缩放、发光与旋转效果。程序无需安装，release 版 `curosu.exe` 仅约 **3.5 MB**。
+Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 Rust 重写，复刻 osu! lazer 的光标动画、缩放、发光与旋转效果。release 包约 **3.5 MB**。
 
 > 非 osu! 官方项目，与 osu! 或 ppy 无关。
 
@@ -22,9 +22,11 @@ Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 R
 - 托盘图标、点击穿透、置顶和多显示器 DPI 自适应
 - 鼠标钩子失效时自动回退到位置轮询
 
-## 下载与运行
+## 下载与安装
 
-从 [Releases](https://github.com/yaki1210/CurOsu/releases/latest) 下载 `curosu.exe`，双击即可运行，无需安装。
+从 [Releases](https://github.com/yaki1210/CurOsu/releases/latest) 下载 `curosu-win-x64.zip` 并解压，双击 `install.bat`（弹出 UAC 时点"是"）。脚本会把 `curosu.exe` 安装到 `C:\Program Files\Curosu` 并用本机自签名证书签名，之后从该目录启动即可（可创建快捷方式）。
+
+> **为什么要运行安装脚本？** 程序清单请求了 `uiAccess="true"`，让光标能覆盖开始菜单、通知中心等系统窗口。Windows 要求这类程序必须**已签名**且位于**安全目录**（如 Program Files），否则启动会报错"从服务器返回了一个参照"（错误 8235）。安装脚本会在本机生成仅本机信任的自签名证书并完成签名，无需购买代码签名证书；换电脑后需重新运行一次脚本。
 
 程序首次启动会打开设置窗口；关闭设置窗口只会将程序隐藏到托盘，不会退出。托盘图标操作如下：
 
