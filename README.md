@@ -8,7 +8,7 @@ Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 R
 
 ## 演示
 
-[![Curosu 演示](https://i1.hdslb.com/bfs/archive/6247c43c939907d9372b18b05da9b1f303ef34f0.jpg)](https://www.bilibili.com/video/BV1Cvbr6hEvd)
+[![Curosu 演示](https://i2.hdslb.com/bfs/archive/46fb84a45c885bd5553250883b43ed04e3d07dd7.jpg)](https://www.bilibili.com/video/BV1Cvbr6hEvd)
 
 点击上方封面在 B 站观看演示视频。
 
