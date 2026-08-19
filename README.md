@@ -8,7 +8,7 @@ Curosu 基于 [OsuCursirWin](https://github.com/xyc-233/OsuCursirWin)，使用 R
 
 ## 演示
 
-<video src="https://github.com/yaki1210/CurOsu/raw/refs/heads/main/demo/demo.mp4" controls width="720"></video>
+<video src="https://github.com/yaki1210/Curosu/raw/main/demo/demo.mp4" controls autoplay loop muted width="720"></video>
 
 [下载 / 查看演示视频](demo/demo.mp4)
 
